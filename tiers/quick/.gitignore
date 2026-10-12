@@ -1,0 +1,25 @@
+# Secrets
+.env
+*.pem
+*.key
+id_rsa*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Editors / OS
+.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code — per-machine settings
+.claude/settings.local.json
+
+# Sync-tool artefacts are an alert, never content
+*conflicted copy*

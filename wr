@@ -1,0 +1,3 @@
+#!/bin/sh
+# WorkRealm launcher for bash / Git Bash:  ./wr new MyTask
+exec python "$(dirname "$0")/wr.py" "$@"
