@@ -77,7 +77,7 @@ NAMING = {
 }
 # Tool-owned paths: refreshed by `wr upgrade` so a workspace runs the current checks.
 # Everything else is the user's and is never overwritten.
-TOOL_OWNED = (".ai/", ".githooks/")
+TOOL_OWNED = (".ai/", ".githooks/", ".claude/skills/")
 HOOKS_PATH = ".githooks"
 
 
@@ -150,19 +150,39 @@ def hook_cmd(script: str) -> dict:
     return {"type": "command", "command": f'python "$CLAUDE_PROJECT_DIR/.ai/hooks/{script}"', "timeout": 20}
 
 
+STATUS_LINE = {"type": "command", "command": 'python "${CLAUDE_PROJECT_DIR:-.}/.ai/statusline.py"'}
+# Secrets are never read into context; tool-owned files are changed only with the user's yes.
+PERMISSIONS = {
+    "deny": ["Read(./.env)", "Read(./.env.*)", "Read(!.env.example)", "Read(**/*.pem)", "Read(**/*.key)",
+             "Read(**/id_rsa*)", "Bash(git push --force *)", "Bash(git push -f *)",
+             "PowerShell(git push --force *)", "PowerShell(git push -f *)"],
+    "ask": ["Edit(./.ai/**)", "Edit(./.githooks/**)", "Edit(./.workrealm.json)", "Edit(./.claude/settings.json)"],
+}
+
+
 def write_settings(dest: Path, tier: str) -> None:
-    """Own the `hooks` key of .claude/settings.json; leave every other key alone."""
+    """Own `hooks` in .claude/settings.json, add WorkRealm's permission entries and the
+    status line (unless the user set their own); leave every other key alone."""
     path = dest / ".claude" / "settings.json"
     settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    hooks: dict = {"Stop": [{"hooks": [hook_cmd("checkpoint_gate.py")]}]}
-    pre = []
+    write_hooks = []
     if tier in ("task", "project"):
-        pre.append(hook_cmd("protect_paths.py"))
+        write_hooks.append(hook_cmd("protect_paths.py"))
     if tier == "project":
-        pre.append(hook_cmd("zone_guard.py"))
-    if pre:
-        hooks["PreToolUse"] = [{"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": pre}]
-    settings["hooks"] = hooks
+        write_hooks.append(hook_cmd("zone_guard.py"))
+    pre = [{"matcher": "Bash|PowerShell", "hooks": [hook_cmd("bash_guard.py")]}]
+    if write_hooks:
+        pre.insert(0, {"matcher": "Write|Edit|MultiEdit|NotebookEdit", "hooks": write_hooks})
+    settings["hooks"] = {
+        "SessionStart": [{"hooks": [hook_cmd("session_start.py")]}],
+        "PreToolUse": pre,
+        "Stop": [{"hooks": [hook_cmd("checkpoint_gate.py")]}],
+    }
+    perms = settings.setdefault("permissions", {})
+    for kind, rules in PERMISSIONS.items():
+        perms[kind] = perms.get(kind, []) + [r for r in rules if r not in perms.get(kind, [])]
+    if ".ai/statusline.py" in json.dumps(settings.get("statusLine", ".ai/statusline.py")):
+        settings["statusLine"] = STATUS_LINE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8", newline="\n")
 

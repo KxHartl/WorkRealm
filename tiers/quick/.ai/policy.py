@@ -29,13 +29,14 @@ META = ".workrealm.json"
 # every rule tagged "enforced by" in AGENTS.md appears here with those layers.
 ENFORCES = {
     "R-LANG": {"git": ["english"]},
-    "R-COMMIT": {"git": ["commit_msg"], "claude": ["checkpoint_gate.py"]},
+    "R-STATE": {"claude": ["session_start.py"]},
+    "R-COMMIT": {"git": ["commit_msg"], "claude": ["checkpoint_gate.py", "bash_guard.py"]},
     "R-SECRETS": {"git": ["secrets"]},
     "R-PLACE": {"git": ["naming"]},
-    "R-SOURCES": {"git": ["protected_paths", "sources_logged"], "claude": ["protect_paths.py"]},
+    "R-SOURCES": {"git": ["protected_paths", "sources_logged"], "claude": ["protect_paths.py", "bash_guard.py"]},
     "R-DECISIONS": {"git": ["decision_register", "decision_commit_body"]},
     "R-ZONES": {"git": ["zone_placement"], "claude": ["zone_guard.py"]},
-    "R-EVIDENCE": {"git": ["protected_paths"], "claude": ["protect_paths.py"]},
+    "R-EVIDENCE": {"git": ["protected_paths"], "claude": ["protect_paths.py", "bash_guard.py"]},
     "R-ADR": {"git": ["adr_format"]},
 }
 
@@ -46,6 +47,9 @@ STRUCTURAL = {
     "__init__.py", "conftest.py", ".gitkeep", ".gitignore",
 }
 ZONES = ("10-research", "20-prompts", "30-decisions", "40-lab", "50-release", "90-archive")
+# Releases are snapshots: they hold copies of documents on purpose, decisions included.
+SNAPSHOT_ZONES = ("50-release",)
+DECISION_HOMES = ("30-decisions", "90-archive") + SNAPSHOT_ZONES
 DECISION_DOC = re.compile(r"^(ADR-\d+|DECISIONS|OPEN-ITEMS|CONSTRAINTS)", re.I)
 ADR_FILE = re.compile(r"^ADR-\d+.*\.md$")
 ADR_SECTIONS = ("## Decision", "## Alternatives", "## What would change my mind",
@@ -222,17 +226,17 @@ def check_zone_placement(root, meta, changes):
             continue
         name = name_of(path)
         zone = path.split("/", 1)[0] if path.split("/", 1)[0] in ZONES else None
-        if DECISION_DOC.search(name) and name != "ADR-TEMPLATE.md" and zone not in ("30-decisions", "90-archive"):
+        if DECISION_DOC.search(name) and name != "ADR-TEMPLATE.md" and zone not in DECISION_HOMES:
             yield block("R-ZONES", f"{path} is a decision document outside 30-decisions/. If it is not "
                                    "settled yet it is research: 10-research/notes/.")
     for path in added:
         name, zone = name_of(path), path.split("/", 1)[0]
-        if zone not in ZONES or name in STRUCTURAL:
+        if zone not in ZONES or zone in SNAPSHOT_ZONES or name in STRUCTURAL:
             continue
         if tracked is None:
             tracked = git(root, "ls-files", "-z").stdout.split("\0")
         dups = [t for t in tracked if t and t != path and name_of(t) == name
-                and t.split("/", 1)[0] in ZONES and t.split("/", 1)[0] != zone]
+                and t.split("/", 1)[0] in ZONES and t.split("/", 1)[0] not in (zone,) + SNAPSHOT_ZONES]
         if dups:
             yield block("R-ZONES", f"{path} duplicates {dups[0]}. A document lives in one zone: "
                                    "move it with `git mv`, never copy.")
@@ -328,12 +332,12 @@ def write_verdict(root: Path, check: str, rel: str, exists: bool) -> tuple[int, 
         name = name_of(rel)
         head = rel.split("/", 1)[0]
         zone = head if head in ZONES else None
-        if DECISION_DOC.search(name) and name != "ADR-TEMPLATE.md" and zone not in ("30-decisions", "90-archive"):
+        if DECISION_DOC.search(name) and name != "ADR-TEMPLATE.md" and zone not in DECISION_HOMES:
             return 2, (f"BLOCKED [R-ZONES] {rel}: decision documents live in 30-decisions/. If it is not "
                        "settled yet, it is research -- 10-research/notes/.")
-        if zone and not exists and name not in STRUCTURAL:
+        if zone and zone not in SNAPSHOT_ZONES and not exists and name not in STRUCTURAL:
             for other in ZONES:
-                if other == zone or not (root / other).is_dir():
+                if other == zone or other in SNAPSHOT_ZONES or not (root / other).is_dir():
                     continue
                 for dup in (root / other).rglob(name):
                     if dup.is_file():
@@ -343,6 +347,98 @@ def write_verdict(root: Path, check: str, rel: str, exists: bool) -> tuple[int, 
             return 0, (f"NOTE: editing {rel} -- the settled zone. If the decision moves, add a decision-log "
                        "row (ADR) or a superseding row (DECISIONS.md), and say why in the commit body.")
     return 0, ""
+
+
+SEPARATORS = re.compile(r"&&|\|\||[;|&\n]")
+REDIRECT = re.compile(r"(?<![<\d&])\d?>>?\s*([^\s;|&<>]+)")
+DESTRUCTIVE = {
+    "rm", "rmdir", "mv", "tee", "truncate", "shred", "unlink", "del", "erase", "ren", "move",
+    "remove-item", "move-item", "rename-item", "set-content", "add-content", "out-file", "clear-content",
+    "ri", "mi", "rni", "sc", "ac", "clc",
+}
+NO_VERIFY = re.compile(r"\bgit\b[^;&|\n]*\s(commit|merge|push|rebase|am|cherry-pick)\b[^;&|\n]*\s--no-verify\b")
+COMMIT_N = re.compile(r"\bgit\b[^;&|\n]*\scommit\b[^;&|\n]*\s-[a-zA-Z]*n[a-zA-Z]*\b")
+
+
+def _clean(token: str) -> str:
+    return token.strip("\"'`()").replace("\\", "/")
+
+
+def _protected_target(root: Path, protected: list[str], token: str) -> tuple[str, str] | None:
+    """(rel, prefix) if token names an EXISTING path under a protected prefix."""
+    token = _clean(token)
+    if not token or token.startswith("-"):
+        return None
+    try:
+        path = (root / token).resolve()
+        rel = path.relative_to(root).as_posix()
+    except (ValueError, OSError):
+        return None
+    for prefix in protected:
+        base = prefix.rstrip("/")
+        if not under(rel, base):
+            continue
+        if rel != base and path.exists():
+            return rel, prefix
+        if rel == base and path.is_dir() and any(path.iterdir()):  # the whole protected folder
+            return rel, prefix
+    return None
+
+
+def bash_verdict(root: Path, command: str) -> tuple[int, str]:
+    """Verdict on a shell command about to run: (exit code, message). Heuristic, so it only
+    blocks clear cases; the pre-commit check catches the rest at commit time."""
+    if NO_VERIFY.search(command) or COMMIT_N.search(command):
+        return 2, ("BLOCKED [R-COMMIT] --no-verify skips the checks that bind every tool. Fix what the "
+                   "check refuses instead; if the check itself is wrong, say so to the user.")
+    if "core.hookspath" in command.lower() and ".githooks" not in command:
+        return 2, "BLOCKED [R-COMMIT] core.hooksPath must stay .githooks; it is what runs the checks."
+    protected = load_meta(root).get("protected", [])
+    if not protected:
+        return 0, ""
+    hits = []
+    for m in REDIRECT.finditer(command):
+        hit = _protected_target(root, protected, m.group(1))
+        if hit:
+            hits.append(hit)
+    for part in SEPARATORS.split(command):
+        words = part.split()
+        while words and re.fullmatch(r"\w+=\S*", words[0]):  # leading VAR=value
+            words = words[1:]
+        if not words:
+            continue
+        verb = words[0].lower()
+        args = words[1:]
+        if verb == "git" and args[:1] and args[0] in ("rm", "mv"):
+            verb, args = args[0], args[1:]
+        elif verb == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args):
+            verb = "rm"  # in-place edit counts as destructive
+        if verb in DESTRUCTIVE:
+            hits += [h for h in (_protected_target(root, protected, a) for a in args) if h]
+    if hits:
+        rel, prefix = hits[0]
+        rule = "R-SOURCES" if under(prefix, SOURCES) else "R-EVIDENCE"
+        return 2, (f"BLOCKED [{rule}] this command would change or remove {rel}; {prefix}/ is write-once.\n"
+                   "  Derived work goes to 10-research/notes/; a re-run or new version is a NEW file or folder.")
+    return 0, ""
+
+
+def bash_hook_main() -> int:
+    """Entry point for the Claude Code PreToolUse hook on Bash / PowerShell."""
+    import os
+    safe_stderr()
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+    command = (payload.get("tool_input", {}) or {}).get("command") or ""
+    if not command:
+        return 0
+    root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or ".").resolve()
+    code, msg = bash_verdict(root, command)
+    if msg:
+        print(msg, file=sys.stderr)
+    return code
 
 
 def hook_main(check: str) -> int:

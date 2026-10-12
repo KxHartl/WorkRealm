@@ -30,7 +30,9 @@ Each tier is a **strict extension** of the one below, so `wr upgrade` only ever 
 | `30-decisions/` `DECISIONS.md` + `OPEN-ITEMS.md` | | ✓ | ✓ + ADRs, `CONSTRAINTS.md` |
 | `src/` | | ✓ | ✓ |
 | `20-prompts/`, `40-lab/`, `50-release/`, `90-archive/` | | | ✓ |
-| Claude Code hooks | `checkpoint_gate` | + `protect_paths` | + `zone_guard` |
+| Claude Code hooks | `session_start`, `checkpoint_gate`, `bash_guard` | + `protect_paths` | + `zone_guard` |
+| Helpers (`python .ai/wr.py …`) and skills | `status`, `checkpoint`, `handoff` | + `note`, `source add`, `decide`, `open-item` | + `adr new`, `exp new`, `run new`, `prompt`, `release cut` |
+| Status line, permissions (secrets unreadable, guard-rail edits ask) | ✓ | ✓ | ✓ |
 | Private GitHub repo by default | no | yes | yes |
 
 The zones are KEV-Ai-Architecture's, distilled: what worked there is the project tier, and the
@@ -60,8 +62,13 @@ wr upgrade --to task|project [--path WORKSPACE]
 - **Checks that bind every tool.** `.ai/policy.py` holds every machine-checked rule once. The git
   hooks in `.githooks/` (wired up with `core.hooksPath`) run it on every commit, whether it comes
   from Claude Code, Gemini, Codex, Cursor or a person. Refusals quote the rule ID and say how to fix it.
-- **Claude Code hooks on top.** The Stop hook will not let an agent finish with uncommitted work.
-  `protect_paths` and `zone_guard` stop a bad write before it happens, using the same `policy.py`.
+- **Claude Code hooks on top.** Every session starts with `STATE.md` and the workspace status
+  already in context. The Stop hook will not let an agent finish with uncommitted work.
+  `protect_paths`, `zone_guard` and `bash_guard` stop a bad write or shell command before it
+  happens, using the same `policy.py`.
+- **The right way is the easy way.** `python .ai/wr.py` helpers (and the Claude skills that wrap
+  them) create correctly named notes, logged sources, complete decision rows, ADRs, runs and
+  releases, so following the rules takes one command.
 - **A `post-commit` hook that pushes every commit.** This is the lesson of the September 2026 disk
   loss: a commit that exists only locally is one disk failure from gone.
 
@@ -86,7 +93,7 @@ Run the tests: `python -m unittest discover tests`
 The agreed plan is in [`docs/PLAN.md`](docs/PLAN.md). Releases, in order:
 
 - **0.2.0, enforcement core** (done): `policy.py`, versioned git hooks, rule IDs, `GEMINI.md`.
-- **0.3.0, Claude ergonomics**: SessionStart/PreCompact hooks, a Bash write guard, permissions,
+- **0.3.0, Claude ergonomics** (done): SessionStart hook, a Bash write guard, permissions,
   a status line, `.ai/wr.py` helpers (`decide`, `source add`, `adr new` …) and skills that wrap them.
 - **0.4.0, AgentBrain**: work agents in `~/.agentbrain/agents/work/`, synced per tier and pinned.
 - **0.5.0, maintenance**: `wr doctor`, `wr adopt`.

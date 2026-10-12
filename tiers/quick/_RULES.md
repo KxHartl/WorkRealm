@@ -2,9 +2,14 @@
 
 Each rule carries an ID and says what enforces it. **git** means `.githooks/` refuses a commit
 that breaks it, whichever tool or person makes the commit; **claude** means a Claude Code hook
-also stops it before the file is written; **advisory** means only this text holds it, so it
+acts on it as it happens (stops the write or command, or loads the context); **advisory** means
+only this text holds it, so it
 depends on you. The checks live in `.ai/policy.py`; their messages quote the rule ID.
 Never bypass a check with `--no-verify`. If a check is wrong, say so and fix the check.
+
+**Use the helpers.** `python .ai/wr.py` does each common step the way the checks accept it:
+`status`, `checkpoint`, `handoff`, and at higher tiers `note`, `source add`, `decide`, `open-item`,
+`adr new`, `exp new`, `run new`, `release cut` (`--help` lists them). Prefer them to doing it by hand.
 
 ## Communication
 
@@ -16,10 +21,13 @@ source verbatim is fine.
 
 ## Context first
 
-> **R-STATE** · advisory
+> **R-STATE** · enforced by: claude
 
 Read `STATE.md` before doing anything — it is the only memory that survives between sessions.
-Update it whenever the goal, the next step or a blocker changes.
+In Claude Code the session-start hook prints it with the workspace status, and again after a
+context compaction; in other tools, run `python .ai/wr.py status` first.
+Update it whenever the goal, the next step or a blocker changes, and before ending a session
+(`python .ai/wr.py handoff`).
 
 ## Commit every logical unit, immediately
 

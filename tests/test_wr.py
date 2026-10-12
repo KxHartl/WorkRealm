@@ -57,7 +57,12 @@ class TestNew(Base):
         self.assertTrue((ws / ".ai" / "checkpoint.py").exists())
         self.assertFalse((ws / "10-research").exists())
         settings = json.loads((ws / ".claude" / "settings.json").read_text())
-        self.assertNotIn("PreToolUse", settings["hooks"])
+        self.assertEqual([m["matcher"] for m in settings["hooks"]["PreToolUse"]], ["Bash|PowerShell"])
+        self.assertIn("SessionStart", settings["hooks"])
+        self.assertIn(".ai/statusline.py", settings["statusLine"]["command"])
+        self.assertIn("Read(./.env)", settings["permissions"]["deny"])
+        self.assertTrue((ws / ".claude" / "skills" / "checkpoint" / "SKILL.md").exists())
+        self.assertFalse((ws / ".claude" / "skills" / "decide").exists())
         self.assertIn("@./AGENTS.md", (ws / "GEMINI.md").read_text(encoding="utf-8"))
 
     def test_project_has_zones_and_guard(self):
@@ -332,6 +337,124 @@ class TestUpgradeTooling(Base):
         done = subprocess.run([sys.executable, ".ai/checkpoint.py", "chore: upgrade to task tier",
                                "WorkRealm upgrade."], cwd=ws, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_upgrade_keeps_user_settings(self):
+        ws = self.new("r2", "--quick")
+        path = ws / ".claude" / "settings.json"
+        settings = json.loads(path.read_text())
+        settings["model"] = "opus"
+        settings["statusLine"] = {"type": "command", "command": "my-line"}
+        settings["permissions"]["deny"].append("Bash(rm -rf *)")
+        path.write_text(json.dumps(settings))
+        self.assertEqual(run_wr("upgrade", "--to", "project", "--path", str(ws)).returncode, 0)
+        after = json.loads(path.read_text())
+        self.assertEqual(after["model"], "opus")
+        self.assertEqual(after["statusLine"]["command"], "my-line")
+        self.assertIn("Bash(rm -rf *)", after["permissions"]["deny"])
+        self.assertEqual(after["permissions"]["deny"].count("Read(./.env)"), 1)
+        self.assertEqual(after["hooks"]["PreToolUse"][0]["matcher"], "Write|Edit|MultiEdit|NotebookEdit")
+
+
+def helper(ws: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, ".ai/wr.py", *args], cwd=ws, capture_output=True, text=True)
+
+
+class TestClaudeErgonomics(Base):
+    def test_session_start_prints_state_and_status(self):
+        ws = self.new("s1")
+        out = run_hook(ws, "session_start.py", {"source": "startup"})
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("tier task", out.stdout)
+        self.assertIn("--- STATE.md ---", out.stdout)
+        self.assertIn("Open items: 0", out.stdout)
+        self.assertIn("compacted", run_hook(ws, "session_start.py", {"source": "compact"}).stdout)
+
+    def test_statusline(self):
+        ws = self.new("s2", "--project")
+        (ws / "x.txt").write_text("x")
+        r = subprocess.run([sys.executable, ".ai/statusline.py"], cwd=ws, input="{}", capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "s2 [project] | main | 1 uncommitted | no remote")
+
+    def test_bash_guard(self):
+        ws = self.new("s3", "--project")
+        src = ws / "10-research" / "sources" / "spec.pdf"
+        src.write_bytes(b"x")
+        cases = {
+            "rm 10-research/sources/spec.pdf": 2,
+            "Remove-Item 10-research\\sources\\spec.pdf": 2,
+            "sed -i s/a/b/ 10-research/sources/spec.pdf": 2,
+            "echo x >> 10-research/sources/spec.pdf": 2,
+            "git mv 10-research/sources/spec.pdf 10-research/notes/": 2,
+            "rm -rf 40-lab/results": 2,
+            "cat 10-research/sources/spec.pdf > 10-research/notes/2026-10-12-spec.md": 0,
+            "curl -o 10-research/sources/new.pdf https://example.com/a.pdf": 0,
+            "echo x > 10-research/sources/new.txt": 0,
+            'git commit --no-verify -m "feat: x"': 2,
+            'git commit -nm "feat: x"': 2,
+            "git push -n origin main": 0,
+            "git config core.hooksPath /dev/null": 2,
+            "git status && ls 10-research/sources": 0,
+        }
+        for command, expected in cases.items():
+            r = run_hook(ws, "bash_guard.py", {"tool_name": "Bash", "tool_input": {"command": command}})
+            self.assertEqual(r.returncode, expected, f"{command}: {r.stderr}")
+
+    def test_task_helpers_produce_what_the_checks_accept(self):
+        ws = self.new("s4")
+        self.assertEqual(helper(ws, "note", "Vendor options!").returncode, 0)
+        self.assertTrue((ws / "10-research" / "notes").glob("*-vendor-options.md"))
+        local = self.tmp / "spec-v2.pdf"
+        local.write_bytes(b"pdf")
+        r = helper(ws, "source", "add", "https://example.com/spec-v2.pdf", "--desc", "Spec v2", "--file", str(local))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotEqual(helper(ws, "source", "add", "https://x", "--desc", "d", "--file", str(local)).returncode, 0)
+        self.assertEqual(helper(ws, "decide", "Use Postgres", "--alt", "SQLite -- no concurrent writers").returncode, 0)
+        self.assertEqual(helper(ws, "decide", "Use MySQL", "--alt", "Postgres -- licence",
+                                "--supersedes", "D1").returncode, 0)
+        decisions = (ws / "30-decisions" / "DECISIONS.md").read_text(encoding="utf-8")
+        self.assertIn("| D1 |", decisions)
+        self.assertIn("| D2 |", decisions)
+        self.assertEqual(len(re.findall(r"^\| D1 \|", decisions, re.M)), 1)
+        self.assertEqual(helper(ws, "open-item", "Which vendor?", "--owner", "KH", "--trigger", "pilot").returncode, 0)
+        self.assertEqual(helper(ws, "open-item", "Budget?", "--owner", "KH", "--trigger", "Q4").returncode, 0)
+        self.assertEqual(helper(ws, "close-item", "O1", "Vendor A").returncode, 0)
+        items = (ws / "30-decisions" / "OPEN-ITEMS.md").read_text(encoding="utf-8")
+        self.assertIn("| O1 | Which vendor? | Vendor A |", items.split("## Closed")[1])
+        self.assertNotIn("Which vendor?", items.split("## Closed")[0])
+        self.assertEqual(commit(ws, "docs: helpers", "Exercise every task helper.").returncode, 0)
+        self.assertNotEqual(helper(ws, "adr", "new", "x").returncode, 0)  # project tier only
+
+    def test_project_helpers_produce_what_the_checks_accept(self):
+        ws = self.new("s5", "--project")
+        for args in (("adr", "new", "Storage backend"), ("exp", "new", "Cache warmup"), ("run", "new", "smoke"),
+                     ("run", "new"), ("prompt", "new", "Restructure plan")):
+            self.assertEqual(helper(ws, *args).returncode, 0, args)
+        self.assertTrue((ws / "30-decisions" / "ADR-01-storage-backend.md").exists())
+        runs = sorted(p.name for p in (ws / "40-lab" / "results").iterdir() if p.is_dir())
+        self.assertEqual(len(runs), 2)
+        self.assertTrue(runs[1].endswith("-02"))
+        r = commit(ws, "docs: scaffold work", "Exercise every project helper.")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        prompt = next((ws / "20-prompts" / "active").glob("*-restructure-plan.md"))
+        self.assertEqual(helper(ws, "prompt", "done", str(prompt.relative_to(ws))).returncode, 0)
+        self.assertEqual(commit(ws, "docs: prompt ran").returncode, 0)
+        self.assertEqual(helper(ws, "release", "cut", "v0.1.0", "--include", "30-decisions").returncode, 0)
+        manifest = (ws / "50-release" / "v0.1.0" / "MANIFEST.md").read_text(encoding="utf-8")
+        self.assertIn("ADR-01-storage-backend.md", manifest)
+        self.assertNotEqual(helper(ws, "release", "cut", "v0.2.0", "--include", "src").returncode, 0)  # dirty
+        r = commit(ws, "chore: release v0.1.0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_every_skill_is_well_formed_and_calls_real_helpers(self):
+        ws = self.new("s6", "--project")
+        skills = sorted((ws / ".claude" / "skills").glob("*/SKILL.md"))
+        self.assertEqual(len(skills), 9)
+        for skill in skills:
+            text = skill.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("---\nname: " + skill.parent.name + "\ndescription: "), skill)
+            for cmd in set(re.findall(r"python \.ai/wr\.py ([a-z-]+(?: new| add| cut| done)?)", text)):
+                r = helper(ws, *cmd.split(), "--help")
+                self.assertEqual(r.returncode, 0, f"{skill.parent.name}: {cmd}")
 
 
 if __name__ == "__main__":

@@ -15,9 +15,12 @@ The numbered folders are the workflow; sorting them alphabetically sorts them by
 
 **Moving a document between zones is a deliberate, committed act** (`git mv`). Never keep the
 same content in two zones. Decision documents outside `30-decisions/` and copies across zones are
-refused; the Claude hook also notes every edit to `30-decisions/`.
+refused; the Claude hook also notes every edit to `30-decisions/`. The one exception is
+`50-release/`: a release is a snapshot and holds copies on purpose.
 
-Where new work goes by default, and how it is named (checked when added):
+Where new work goes by default, and how it is named (checked when added). The helpers
+(`python .ai/wr.py note | exp new | prompt new | prompt done | run new | adr new | release cut`)
+create each of these with the right name:
 
 - A question you cannot answer yet → `10-research/notes/YYYY-MM-DD-topic.md`
 - Something to try → `10-research/experiments/EXP-<YYYYMMDD>-<topic>/`

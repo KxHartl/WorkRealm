@@ -15,12 +15,14 @@
 
 **Naming** (checked when a file is added): notes are `YYYY-MM-DD-topic` in lowercase kebab-case,
 e.g. `10-research/notes/2026-10-12-vendor-comparison.md`. A folder of notes follows the same rule.
+`python .ai/wr.py note "<topic>"` creates one with the right name.
 
 ## Sources are evidence
 
 > **R-SOURCES** · enforced by: git, claude
 
 - Never edit or delete a file in `10-research/sources/`. Derived output goes to `10-research/notes/`.
+- `python .ai/wr.py source add <URL> --desc "..."` (or `--file <path>`) saves and logs in one step.
 - Log every download in `SOURCES_LOG.md`, in the same commit:
   `[date] — [URL] — [local path] — [description]`. A source without a log line is refused,
   and lines are never removed from the log.
@@ -34,6 +36,8 @@ Each row in `DECISIONS.md` has: the date, the decision, and the strongest altern
 lost. A settled row is **never edited or removed**: changing a decision is a **new row** that names
 the one it supersedes. Each open item in `OPEN-ITEMS.md` has an owner and a trigger — an item
 without a trigger is a wish. A commit that touches `30-decisions/` has a body that says why.
+Record them with `python .ai/wr.py decide "..." --alt "... -- why it lost" [--supersedes D<n>]`,
+`open-item "..." --owner ... --trigger ...` and `close-item O<n> "answer"`.
 A contradiction between two documents is an entry in `OPEN-ITEMS.md` — not something to resolve
 by quietly picking one.
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0 — 2026-10-12
+
+Claude ergonomics: the right way to do something is one command or one skill.
+
+- `.ai/wr.py` workspace helpers for every tool: `status`, `checkpoint`, `handoff`, `note`,
+  `source add`, `decide`, `open-item`, `close-item`, `adr new`, `exp new`, `run new`,
+  `prompt new|done`, `release cut`. Each one produces exactly what the policy checks accept.
+- Skills that wrap them, per tier: `/checkpoint`, `/handoff`; `/note`, `/source`, `/decide`,
+  `/open-item`; `/adr`, `/experiment`, `/release`.
+- SessionStart hook: puts STATE.md and the workspace status (branch, uncommitted, unpushed, open
+  items) into context, and again after a compaction. PreCompact was not used because its output
+  never reaches the model.
+- `bash_guard` (PreToolUse on Bash and PowerShell, all tiers): blocks `--no-verify`, moving
+  `core.hooksPath`, and shell commands that change or remove write-once files.
+- Status line: workspace, tier, branch, uncommitted, unpushed, open items, phase.
+- Permissions: secrets are denied to Read; force-push is denied; edits to the guard-rails
+  (`.ai/`, `.githooks/`, `.workrealm.json`, `.claude/settings.json`) ask the user first.
+  WorkRealm adds its entries and keeps the user's own, and never replaces a status line the user
+  set.
+- R-STATE is now enforced by Claude (session start). Zone checks exempt `50-release/`, because
+  releases are snapshots and hold copies on purpose.
+
 ## 0.2.0 — 2026-10-12
 
 Enforcement core: rules bind every tool, not only Claude Code.
