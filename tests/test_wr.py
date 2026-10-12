@@ -4,6 +4,8 @@
 """
 import importlib.util
 import json
+import os
+import shutil
 import re
 import subprocess
 import sys
@@ -15,14 +17,19 @@ ROOT = Path(__file__).resolve().parent.parent
 WR = ROOT / "wr.py"
 
 
-def run_wr(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(WR), *args], cwd=cwd, capture_output=True, text=True)
+NO_BRAIN = {**os.environ, "AGENTBRAIN_PATH": str(Path(tempfile.gettempdir()) / "wr-test-no-brain")}
+
+
+def run_wr(*args: str, cwd: Path | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
+    """Run the generator. By default with no AgentBrain, so the real brain never shapes a test."""
+    return subprocess.run([sys.executable, str(WR), *args], cwd=cwd, capture_output=True, text=True,
+                          env=env or NO_BRAIN)
 
 
 def run_hook(ws: Path, script: str, payload: dict) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(ws / ".ai" / "hooks" / script)], cwd=ws,
                           input=json.dumps(payload), capture_output=True, text=True,
-                          env={**__import__("os").environ, "CLAUDE_PROJECT_DIR": str(ws)})
+                          env={**os.environ, "CLAUDE_PROJECT_DIR": str(ws)})
 
 
 def git(ws: Path, *args: str) -> str:
@@ -455,6 +462,95 @@ class TestClaudeErgonomics(Base):
             for cmd in set(re.findall(r"python \.ai/wr\.py ([a-z-]+(?: new| add| cut| done)?)", text)):
                 r = helper(ws, *cmd.split(), "--help")
                 self.assertEqual(r.returncode, 0, f"{skill.parent.name}: {cmd}")
+
+
+REAL_BRAIN = Path(os.environ.get("AGENTBRAIN_PATH") or Path.home() / ".agentbrain")
+AGENT_SRC = """---
+name: {name}
+role: {name} role
+tiers: {tiers}
+triggers:
+  - "do {name}"
+writes_to:
+  - "10-research/notes/"
+never_touches:
+  - "10-research/sources/"
+---
+
+Body of {name}.
+"""
+
+
+@unittest.skipUnless((REAL_BRAIN / "scripts" / "sync_skills.py").exists(), "AgentBrain >= 2.4.0 not installed")
+class TestBrainSync(Base):
+    """A fixture brain with the real sync scripts, so the brain's own agents never shape results."""
+
+    def setUp(self):
+        super().setUp()
+        self.brain = self.tmp / "brain"
+        (self.brain / "scripts").mkdir(parents=True)
+        for script in ("sync_agents.py", "sync_skills.py"):
+            shutil.copy2(REAL_BRAIN / "scripts" / script, self.brain / "scripts" / script)
+        (self.brain / "manifest.yaml").write_text('version: "9.1.0"\nmin_workrealm_version: "0.4.0"\n')
+        self.agent("researcher", "[task, project]")
+        self.agent("lab_runner", "[project]")
+        write(self.brain / "skills" / "diagnose.md",
+              "---\ndomain: engineering\ntype: skill\ntiers: [task, project]\n---\n# Diagnose\n\n"
+              "## Context\nUse when something is broken.\n")
+        self.env = {**os.environ, "AGENTBRAIN_PATH": str(self.brain)}
+
+    def agent(self, name: str, tiers: str) -> Path:
+        path = self.brain / "agents" / "work" / f"{name}.md"
+        write(path, AGENT_SRC.format(name=name, tiers=tiers))
+        return path
+
+    def new_ws(self, name: str, *flags: str) -> Path:
+        r = run_wr("new", name, "--dir", str(self.tmp), "--no-remote", *flags, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("AgentBrain 9.1.0 (", r.stdout)  # synced, not refused
+        return self.tmp / name
+
+    def test_new_syncs_per_tier_and_stamps_the_brain(self):
+        ws = self.new_ws("b1")
+        self.assertEqual(sorted(p.stem for p in (ws / ".claude" / "agents").glob("*.md")), ["researcher"])
+        self.assertTrue((ws / ".claude" / "skills" / "diagnose" / "SKILL.md").exists())
+        self.assertEqual(json.loads((ws / ".workrealm.json").read_text())["agentbrain_version"], "9.1.0")
+        self.assertEqual(git(ws, "status", "--porcelain"), "")  # synced files are in the scaffold commit
+        quick = self.new_ws("b2", "--quick")
+        self.assertFalse((quick / ".claude" / "agents").exists())
+
+    def test_upgrade_adds_project_agents(self):
+        ws = self.new_ws("b3")
+        r = run_wr("upgrade", "--to", "project", "--path", str(ws), env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((ws / ".claude" / "agents" / "lab_runner.md").exists())
+
+    def test_sync_check_detects_drift_and_sync_prunes(self):
+        ws = self.new_ws("b4")
+        self.assertEqual(run_wr("sync", "--check", "--path", str(ws), env=self.env).returncode, 0)
+        (self.brain / "agents" / "work" / "researcher.md").unlink()
+        self.agent("reviewer", "[task]")
+        self.assertNotEqual(run_wr("sync", "--check", "--path", str(ws), env=self.env).returncode, 0)
+        self.assertEqual(run_wr("sync", "--path", str(ws), env=self.env).returncode, 0)
+        self.assertEqual(sorted(p.stem for p in (ws / ".claude" / "agents").glob("*.md")), ["reviewer"])
+        r = subprocess.run([sys.executable, ".ai/checkpoint.py", "chore: sync AgentBrain agents and skills"],
+                           cwd=ws, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_brain_that_needs_a_newer_workrealm_is_refused(self):
+        (self.brain / "manifest.yaml").write_text('version: "9.2.0"\nmin_workrealm_version: "99.0.0"\n')
+        r = run_wr("new", "b5", "--dir", str(self.tmp), "--no-remote", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)  # the workspace is still created
+        self.assertIn("needs WorkRealm >= 99.0.0", r.stdout)
+        self.assertFalse((self.tmp / "b5" / ".claude" / "agents").exists())
+
+
+class TestNoBrain(Base):
+    def test_missing_brain_warns_and_still_works(self):
+        r = run_wr("new", "n1", "--dir", str(self.tmp), "--no-remote")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("AgentBrain not found", r.stdout)
+        self.assertNotEqual(run_wr("sync", "--path", str(self.tmp / "n1")).returncode, 0)
 
 
 if __name__ == "__main__":

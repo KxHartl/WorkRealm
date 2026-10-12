@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — 2026-10-12
+
+AgentBrain integration: specialists and shared skills sized to the tier. Needs AgentBrain 2.4.0.
+
+- `wr new` and `wr upgrade` sync AgentBrain's work agents (`agents/work/`, filtered by their
+  `tiers:`) into `.claude/agents/`, and opted-in brain skills into `.claude/skills/`:
+  - task: `researcher`, `reviewer`; skills `diagnose`, `tdd`.
+  - project: adds `decision_keeper`, `lab_runner`, `releaser`; skills
+    `improve-codebase-architecture`, `grill-with-docs`.
+  - quick: none, because agents cost context.
+- `wr sync [--check]` re-syncs, prunes generated files whose source is gone, and reports drift
+  (exit 1) together with how far the brain has moved since the pinned commit.
+- `.workrealm.json` records `agentbrain_version` and `agentbrain_commit`. The brain's
+  `min_workrealm_version` is honoured.
+- A missing brain is a warning: the workspace is created and works, and `wr sync` fills it in later.
+- Edits to generated agents ask the user first (they would be overwritten by the next sync).
+- Rules: specialists are changed in AgentBrain, never in place. New R-LEARN (advisory): general
+  lessons go back to `~/.agentbrain`.
+
 ## 0.3.0 — 2026-10-12
 
 Claude ergonomics: the right way to do something is one command or one skill.

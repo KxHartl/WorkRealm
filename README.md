@@ -33,6 +33,8 @@ Each tier is a **strict extension** of the one below, so `wr upgrade` only ever 
 | Claude Code hooks | `session_start`, `checkpoint_gate`, `bash_guard` | + `protect_paths` | + `zone_guard` |
 | Helpers (`python .ai/wr.py …`) and skills | `status`, `checkpoint`, `handoff` | + `note`, `source add`, `decide`, `open-item` | + `adr new`, `exp new`, `run new`, `prompt`, `release cut` |
 | Status line, permissions (secrets unreadable, guard-rail edits ask) | ✓ | ✓ | ✓ |
+| AgentBrain agents (`wr sync`) | — | `researcher`, `reviewer` | + `decision_keeper`, `lab_runner`, `releaser` |
+| AgentBrain skills | — | `diagnose`, `tdd` | + `improve-codebase-architecture`, `grill-with-docs` |
 | Private GitHub repo by default | no | yes | yes |
 
 The zones are KEV-Ai-Architecture's, distilled: what worked there is the project tier, and the
@@ -43,6 +45,7 @@ smaller tiers are what remains when you take away what a short job does not need
 ```
 wr new NAME [--quick | --project] [--dir PARENT] [--lang match|en|hr] [--remote | --no-remote]
 wr upgrade --to task|project [--path WORKSPACE]
+wr sync [--check] [--path WORKSPACE]
 ```
 
 - `--lang` writes the chat-language rule. `match` (default): reply in the user's language.
@@ -51,6 +54,10 @@ wr upgrade --to task|project [--path WORKSPACE]
   *Project-specific rules* section is kept), the `hooks` key of `.claude/settings.json`, and the
   tool-owned files in `.ai/` and `.githooks/`, so the workspace runs the current checks.
   Your files, such as `STATE.md` and `README.md`, are never overwritten.
+- `sync` re-syncs the work agents and skills from AgentBrain (`~/.agentbrain`, or
+  `AGENTBRAIN_PATH`) for the workspace's tier, prunes ones whose source is gone, and records the
+  brain version and commit. `--check` reports drift and writes nothing. `new` and `upgrade` sync
+  automatically; without a brain they warn and carry on.
 
 ## What every workspace gets
 
@@ -95,6 +102,6 @@ The agreed plan is in [`docs/PLAN.md`](docs/PLAN.md). Releases, in order:
 - **0.2.0, enforcement core** (done): `policy.py`, versioned git hooks, rule IDs, `GEMINI.md`.
 - **0.3.0, Claude ergonomics** (done): SessionStart hook, a Bash write guard, permissions,
   a status line, `.ai/wr.py` helpers (`decide`, `source add`, `adr new` …) and skills that wrap them.
-- **0.4.0, AgentBrain**: work agents in `~/.agentbrain/agents/work/`, synced per tier and pinned.
+- **0.4.0, AgentBrain** (done): work agents in `~/.agentbrain/agents/work/`, synced per tier and pinned.
 - **0.5.0, maintenance**: `wr doctor`, `wr adopt`.
 - **0.6.0, integrations**: `--with github,jira,m365,rag`, `--ticket`, CI.

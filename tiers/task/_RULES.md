@@ -54,3 +54,15 @@ when done — and pushed while in progress, so nothing lives only on one disk.
 
 Every ~5 steps, summarise progress into `STATE.md` instead of holding it all in context.
 Use subagents for broad searches or specialist work; it keeps the main context small.
+The specialists in `.claude/agents/` (`researcher`, `reviewer`, and at the project tier
+`decision_keeper`, `lab_runner`, `releaser`) and the synced skills are generated from
+`~/.agentbrain` by `wr sync`. Change them there, never in place: a sync overwrites them.
+
+## Lessons flow back
+
+> **R-LEARN** · advisory
+
+When something costs time and would cost it again elsewhere (a tool quirk, a failure mode, a
+pattern that worked), write it down where it will be found. If it is general, add it to
+`~/.agentbrain/gotchas/` or `skills/` using `~/.agentbrain/_TEMPLATE.md`, and commit it there.
+If it is specific to this workspace, put it in a note, an ADR or `STATE.md` *Notes*.

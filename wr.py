@@ -5,6 +5,7 @@
     python wr.py new NAME --quick      quick tier: hours to a day
     python wr.py new NAME --project    project tier: weeks to months, KEV-style zones
     python wr.py upgrade --to project  run inside an existing workspace
+    python wr.py sync [--check]        re-sync AgentBrain work agents and skills
 
 Tiers are strict extensions: task = quick + more, project = task + more. That is
 what makes `upgrade` a pure addition -- nothing has to be moved or renamed.
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -156,7 +158,8 @@ PERMISSIONS = {
     "deny": ["Read(./.env)", "Read(./.env.*)", "Read(!.env.example)", "Read(**/*.pem)", "Read(**/*.key)",
              "Read(**/id_rsa*)", "Bash(git push --force *)", "Bash(git push -f *)",
              "PowerShell(git push --force *)", "PowerShell(git push -f *)"],
-    "ask": ["Edit(./.ai/**)", "Edit(./.githooks/**)", "Edit(./.workrealm.json)", "Edit(./.claude/settings.json)"],
+    "ask": ["Edit(./.ai/**)", "Edit(./.githooks/**)", "Edit(./.workrealm.json)", "Edit(./.claude/settings.json)",
+            "Edit(./.claude/agents/**)"],
 }
 
 
@@ -212,6 +215,65 @@ def install_githooks(dest: Path) -> None:
     git(dest, "config", "core.hooksPath", HOOKS_PATH)
 
 
+BRAIN_NAMESPACE = "work"
+
+
+def brain_path() -> Path:
+    return Path(os.environ.get("AGENTBRAIN_PATH") or Path.home() / ".agentbrain")
+
+
+def version_tuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+
+def brain_manifest(brain: Path) -> dict[str, str]:
+    """The flat `key: "value"` lines of AgentBrain's manifest.yaml (no PyYAML)."""
+    try:
+        text = (brain / "manifest.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    return dict(re.findall(r'^([a-z_]+):[ \t]*"?([^"#\n]+?)"?[ \t]*(?:#.*)?$', text, re.M))
+
+
+def sync_brain(dest: Path, tier: str, meta: dict, check: bool = False) -> tuple[bool, str]:
+    """Sync work agents and skills from AgentBrain at this tier; stamp the brain version
+    into meta. Returns (ok, summary). A missing brain is a warning, not an error: a
+    workspace must work on a bare machine."""
+    brain = brain_path()
+    scripts = brain / "scripts"
+    if not (scripts / "sync_agents.py").exists():
+        return False, (f"AgentBrain not found at {brain}: no agents or skills synced. Clone "
+                       "https://github.com/KxHartl/AgentBrain there (or set AGENTBRAIN_PATH), then run `wr sync`.")
+    manifest = brain_manifest(brain)
+    needed = manifest.get("min_workrealm_version", "0")
+    if version_tuple(VERSION) < version_tuple(needed):
+        return False, f"AgentBrain {manifest.get('version')} needs WorkRealm >= {needed}; this is {VERSION}."
+    if not (scripts / "sync_skills.py").exists():
+        return False, f"AgentBrain at {brain} is too old for WorkRealm (no sync_skills.py); pull it."
+    flags = ["--check"] if check else []
+    runs = [
+        subprocess.run([sys.executable, str(scripts / "sync_agents.py"), "--project-root", str(dest),
+                        "--namespace", BRAIN_NAMESPACE, "--tier", tier, "--prune", *flags],
+                       capture_output=True, text=True),
+        subprocess.run([sys.executable, str(scripts / "sync_skills.py"), "--project-root", str(dest),
+                        "--tier", tier, "--prune", *flags], capture_output=True, text=True),
+    ]
+    out = "".join(r.stdout + r.stderr for r in runs).strip()
+    commit = git(brain, "rev-parse", "--short", "HEAD", check=False).stdout.strip()
+    version = manifest.get("version", "?")
+    if check:
+        pinned = meta.get("agentbrain_commit")
+        moved = f" (pinned {pinned}, brain now at {commit})" if pinned and pinned != commit else ""
+        ok = all(r.returncode == 0 for r in runs)
+        return ok, (f"AgentBrain {version}: agents and skills up to date{moved}" if ok else
+                    f"AgentBrain {version}: out of date{moved} -- run `wr sync`\n{out}")
+    if any(r.returncode != 0 for r in runs):
+        return False, f"AgentBrain sync failed:\n{out}"
+    meta.update({"agentbrain_version": version, "agentbrain_commit": commit})
+    agents = len(list((dest / ".claude" / "agents").glob("*.md")))
+    return True, f"AgentBrain {version} ({commit}): {agents} agent(s) and the {tier}-tier skills synced"
+
+
 def create_remote(dest: Path, name: str) -> str:
     if shutil.which("gh") is None:
         return "no remote: `gh` not found. Add one later and every commit will push."
@@ -241,7 +303,9 @@ def cmd_new(args: argparse.Namespace) -> None:
         copy_tier(t, dest, ctx, overwrite=True)  # later tiers replace earlier templates
     write_agents_md(dest, tier, ctx)
     write_settings(dest, tier)
-    write_meta(dest, {"name": args.name, "created": today, "lang": args.lang, **tier_meta(tier)})
+    meta = {"name": args.name, "created": today, "lang": args.lang, **tier_meta(tier)}
+    _, brain_status = sync_brain(dest, tier, meta)
+    write_meta(dest, meta)
 
     git(dest, "init", "-b", "main", "-q")
     install_githooks(dest)
@@ -251,7 +315,8 @@ def cmd_new(args: argparse.Namespace) -> None:
 
     remote = args.remote if args.remote is not None else REMOTE_BY_DEFAULT[tier]
     status = create_remote(dest, args.name) if remote else "no remote (pass --remote to create one)"
-    print(f"Created {tier} workspace: {dest}\n  {status}\n  Next: open it in Claude Code and fill in STATE.md.")
+    print(f"Created {tier} workspace: {dest}\n  {status}\n  {brain_status}\n"
+          "  Next: open it in Claude Code and fill in STATE.md.")
 
 
 def cmd_upgrade(args: argparse.Namespace) -> None:
@@ -272,15 +337,32 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
     write_agents_md(dest, target, ctx)
     write_settings(dest, target)
     meta.update(tier_meta(target))
+    _, brain_status = sync_brain(dest, target, meta)
     write_meta(dest, meta)
     install_githooks(dest)
     print(f"Upgraded {dest.name}: {current} -> {target}. Wrote {len(added)} file(s):")
     for a in added:
         print(f"  + {a}")
+    print(brain_status)
     print("AGENTS.md rules block, .claude/settings.json hooks and tool files (.ai/, .githooks/) refreshed.\n"
           "Review, then commit:\n"
           f'  python .ai/checkpoint.py "chore: upgrade to {target} tier" '
           f'"WorkRealm {VERSION} upgrade: adds the {target}-tier structure, rules and checks."')
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    dest = Path(args.path).resolve()
+    meta_path = dest / META
+    if not meta_path.exists():
+        die(f"{dest} is not a WorkRealm workspace (no {META})")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    ok, status = sync_brain(dest, meta["tier"], meta, check=args.check)
+    print(status)
+    if not ok:
+        sys.exit(1)
+    if not args.check:
+        write_meta(dest, meta)
+        print('Review, then commit: python .ai/checkpoint.py "chore: sync AgentBrain agents and skills"')
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -305,6 +387,11 @@ def main(argv: list[str] | None = None) -> None:
     u.add_argument("--to", choices=TIERS[1:], required=True)
     u.add_argument("--path", default=".", help="workspace root (default: current folder)")
     u.set_defaults(func=cmd_upgrade)
+
+    s = sub.add_parser("sync", help="re-sync AgentBrain work agents and skills for the workspace's tier")
+    s.add_argument("--path", default=".", help="workspace root (default: current folder)")
+    s.add_argument("--check", action="store_true", help="report drift; write nothing (exit 1 if out of date)")
+    s.set_defaults(func=cmd_sync)
 
     args = p.parse_args(argv)
     args.func(args)
