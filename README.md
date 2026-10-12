@@ -55,7 +55,8 @@ archive/          superseded originals                                       pro
 ```
 
 The layout is data in `.workrealm.json` (`layout`, `protected`, `zones`, `naming`), and the checks
-read it from there.
+read it from there. The rules are written per role, so an adopted folder with its own names gets
+rules and checks that name its real folders.
 
 ## The three tiers
 
@@ -101,6 +102,8 @@ add the mark. The git check refuses a commit that has only one of the two.
 wr new NAME [--quick | --project] [--dir PARENT] [--lang match|en|hr] [--remote | --no-remote]
 wr upgrade --to task|project [--path WORKSPACE]
 wr sync [--check] [--path WORKSPACE]
+wr doctor [--fix] [--ci] [--path WORKSPACE]
+wr adopt PATH [--tier quick|task|project] [--dry-run]
 ```
 
 - `--lang` sets the chat-language rule. `match` (the default) means reply in the language the
@@ -113,8 +116,31 @@ wr sync [--check] [--path WORKSPACE]
   the brain version and commit. `--check` reports drift and writes nothing. `new` and `upgrade`
   sync automatically; without a brain they warn and carry on.
 
-**After cloning a workspace**, run `git config core.hooksPath .githooks` once. The hooks are
-versioned, but Git does not turn on a hooks path by itself.
+- `doctor` checks that the guard-rails still work:
+  - version, tool files, settings and rules block;
+  - `core.hooksPath` (after a fresh clone, commits are not checked until it is set);
+  - remote and unpushed commits (a failed background push shows up here);
+  - work tree, the AgentBrain pin, tracked secrets (including literal tokens in `.mcp.json`);
+  - a whole-tree policy pass that lists existing violations without blocking them.
+
+  `--fix` repairs what is safe to repair: hooks path, tool files, settings, rules block, sync, and
+  pushing a branch that has no upstream. It never touches secrets; they need rotating. `--ci` skips
+  the checks of local state and exits 1 on a failure.
+- `adopt` brings an existing folder under WorkRealm and **moves nothing**:
+  - it maps the folder's own names onto the roles (`literature/` as sources, `dist/` as releases,
+    ADRs kept in `decisions/`, and so on); a folder counts only if it holds tracked files, so
+    ignored build output is never a role;
+  - it keeps each naming rule only where the folder already follows it, adapts ADR numbering to
+    the existing style, and relaxes the rest;
+  - it adds the rules block to an existing `AGENTS.md` without touching your text;
+  - it makes `CLAUDE.md` and `GEMINI.md` import it;
+  - it reports what doesn't fit.
+
+  `--dry-run` shows all of this and writes nothing. A folder without Git first gets a baseline
+  commit of what is already there.
+
+**After cloning a workspace**, run `wr doctor --fix` once (or `git config core.hooksPath .githooks`).
+The hooks are versioned, but Git does not turn on a hooks path by itself.
 
 ## Layout of this repo
 
@@ -134,6 +160,4 @@ Run the tests: `python -m unittest discover tests`
 
 See [`docs/DESIGN.md`](docs/DESIGN.md). Next up:
 
-- **0.6.0**: `wr doctor [--fix]` (self-repair: hooks path, remote, drift, brain pin) and `wr adopt`
-  (bring any existing folder in without moving files).
 - **0.7.0**: integrations (`--with github,jira,m365,rag`, `--ticket`, CI that runs the checks on GitHub).

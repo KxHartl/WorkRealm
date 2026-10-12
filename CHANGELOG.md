@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.6.0 — 2026-10-12
+
+Maintenance: keep a workspace's guard-rails working, and bring any existing folder in.
+
+- **`wr doctor [--fix] [--ci]`** reports one line per check:
+  - version, tool files, settings and the AGENTS.md rules block and shims;
+  - `core.hooksPath`, remote and unpushed commits, work tree, AgentBrain pin;
+  - tracked secrets (including literal tokens in `.mcp.json` or settings);
+  - a whole-tree policy pass (`policy.tree_findings`) that lists existing violations without
+    blocking them.
+
+  `--fix` repairs what is safe and never touches secrets. `--ci` skips local state. Exit 1 on any failure.
+- **`wr adopt PATH [--tier] [--dry-run]`** moves nothing:
+  - it maps existing folders onto roles; only folders with tracked files count, so ignored build
+    output is never a role;
+  - it infers naming: it keeps a rule where at least 80% of existing entries already follow it,
+    adapts ADR numbering to the existing style, and relaxes the rest;
+  - it adds the rules block to an existing `AGENTS.md` (your text kept verbatim), makes `CLAUDE.md`
+    and `GEMINI.md` import it, and appends secret patterns to `.gitignore`;
+  - it reports misfits: misplaced decision documents, folders that fit no role, and an existing
+    `core.hooksPath` such as husky, which it never overrides;
+  - a folder without Git first gets a baseline commit (refused if it would include secrets);
+  - a dirty repository is refused, so the adoption is one reviewable change.
+- **Rules by role.** `PROTECTED`, `ZONES`, `SNAPSHOTS` and `NAMING` are written as `{sources}`,
+  `{experiments}/*/results` and so on, and are expanded from each workspace's layout. Templates and
+  rule texts are rewritten to the real folder names. `wr upgrade` keeps an adopted layout and its
+  naming choices.
+- **ADRs:**
+  - `adr new` follows the folder's existing numbering (`ADR-003-...`);
+  - an ADR that predates the rule may still be edited (it may not lose sections);
+  - registers that share a folder with ADRs are not treated as ADRs.
+
 ## 0.5.0 — 2026-10-12
 
 A universal design: a familiar layout, held as data, and the owner's decisions kept with the

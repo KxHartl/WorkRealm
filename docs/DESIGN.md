@@ -21,7 +21,9 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 | Agent harnesses differ; only one has hooks | The binding layer is Git (`.githooks/`, `core.hooksPath`); Claude hooks are a second layer |
 | A guard that always fires stops being read | Checks are silent on the happy path; a test proves a fresh workspace passes with no output |
 | Work exists only on one disk | `post-commit` pushes every commit; the Stop hook refuses to end with a dirty tree |
-| Hooks in `.git/hooks` vanish on clone | Hooks are versioned in `.githooks/`; `wr doctor` (0.6.0) restores `core.hooksPath` |
+| Hooks in `.git/hooks` vanish on clone | Hooks are versioned in `.githooks/`; `wr doctor --fix` restores `core.hooksPath` |
+| A background push fails and nobody notices | `wr doctor` reports commits that are not on the remote and pushes them with `--fix` |
+| Existing work does not fit a template | `wr adopt` maps the folder's own names onto roles, keeps conventions it already follows, moves nothing |
 | Evidence gets edited | Write-once paths, checked at commit time (any tool) and at write time (Claude) |
 | Decisions drift silently | Register rows are superseded, never edited; ADRs carry a decision log; commits need a why |
 | A rule is described but not enforced | The rule-contract test fails when a tag claims a layer that does not exist |
@@ -61,23 +63,11 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 - **0.4.0:** AgentBrain work agents and skills, synced per tier and pinned (`wr sync`).
 - **0.5.0:** the universal layout as data; the project-tier inbox with owner promotion;
   subagent-only AI marking; experiments with per-run results; plans.
+- **0.6.0:** `wr doctor [--fix] [--ci]` and `wr adopt [--dry-run]`. Write-once paths, zones and
+  naming are defined per role, and templates and rule texts follow the workspace's own layout.
 
 ## Next
 
-- **0.6.0, maintenance:**
-  - `wr doctor [--ci] [--fix]` checks:
-    - `core.hooksPath`;
-    - remote and unpushed commits;
-    - template drift;
-    - the rule contract;
-    - the AgentBrain pin;
-    - secrets in tracked files or in `.mcp.json`;
-    - a whole-tree policy pass.
-
-    `--fix` repairs what is safe to repair.
-  - `wr adopt [--tier T] [--dry-run]` brings any existing folder under WorkRealm without moving
-    files: it maps existing folders onto `layout`, installs the tooling, and reports what doesn't
-    fit. It is tested on generic fixture folders.
 - **0.7.0, integrations:**
   - `wr new --with github,jira,m365,rag` writes `.mcp.json` from templates. Secrets only come from
     environment variables, and the server packages are verified against current docs.
