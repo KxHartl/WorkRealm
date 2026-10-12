@@ -3,6 +3,8 @@
 > A workspace generator for AI-agent work — tasks and projects, not seminars and theses.
 > The work-oriented sibling of [LiteRealm](https://github.com/KxHartl/LiteRealm).
 
+Repository: <https://github.com/KxHartl/WorkRealm> (private)
+
 One command creates a Git-backed folder with rules, memory and guard-rails sized to the job:
 
 ```powershell
