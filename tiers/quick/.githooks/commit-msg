@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed by WorkRealm (core.hooksPath = .githooks). The checks live in .ai/policy.py.
+PY=$(command -v python || command -v python3) || { echo "commit-msg: python not found; checks skipped" >&2; exit 0; }
+exec "$PY" "$(git rev-parse --show-toplevel)/.ai/policy.py" commit-msg "$1"

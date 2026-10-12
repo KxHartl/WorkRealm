@@ -1,0 +1,5 @@
+#!/bin/sh
+# Installed by WorkRealm (core.hooksPath = .githooks). Binds every tool and every
+# human, not only Claude Code. The checks live in .ai/policy.py.
+PY=$(command -v python || command -v python3) || { echo "pre-commit: python not found; checks skipped" >&2; exit 0; }
+exec "$PY" "$(git rev-parse --show-toplevel)/.ai/policy.py" pre-commit

@@ -49,13 +49,36 @@ CHAT_LANG = {
     "hr": "**Chat:** Croatian.",
 }
 
-POST_COMMIT = """#!/bin/sh
-# Installed by WorkRealm. Push every commit at once: a local-only commit is one
-# disk failure from gone. Silent no-op when there is no remote.
-git remote get-url origin >/dev/null 2>&1 || exit 0
-branch=$(git symbolic-ref --short -q HEAD) || exit 0
-git push -q origin "$branch" >/dev/null 2>&1 &
-"""
+# Which .ai/policy.py checks run, per tier. Each tier adds; none removes or renames.
+CHECKS = {
+    "quick": ["secrets", "commit_msg", "english"],
+    "task": ["protected_paths", "sources_logged", "naming", "decision_register", "decision_commit_body"],
+    "project": ["zone_placement", "adr_format"],
+}
+# Naming patterns, checked on the first path segment below `under` when a file is added.
+DATED = r"\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+)*"
+NAMING = {
+    "quick": [],
+    "task": [
+        {"under": "10-research/notes", "pattern": DATED, "example": "2026-10-12-vendor-comparison.md"},
+    ],
+    "project": [
+        {"under": "10-research/experiments", "pattern": r"EXP-\d{8}-[a-z0-9]+(?:-[a-z0-9]+)*",
+         "example": "EXP-20261012-cache-warmup"},
+        {"under": "20-prompts/active", "pattern": DATED, "example": "2026-10-12-restructure.md"},
+        {"under": "20-prompts/archive", "pattern": DATED, "example": "2026-10-12-restructure.md"},
+        {"under": "30-decisions",
+         "pattern": r"ADR-\d{2,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md|ADR-TEMPLATE\.md|DECISIONS\.md"
+                    r"|OPEN-ITEMS\.md|CONSTRAINTS\.md|INDEX\.md",
+         "example": "ADR-03-storage-backend.md"},
+        {"under": "40-lab/results", "pattern": r"RUN-\d{8}(?:-\d{2})?", "example": "RUN-20261012-02"},
+        {"under": "50-release", "pattern": r"v\d+\.\d+\.\d+(?:-[\w.]+)?", "example": "v0.2.0-pilot"},
+    ],
+}
+# Tool-owned paths: refreshed by `wr upgrade` so a workspace runs the current checks.
+# Everything else is the user's and is never overwritten.
+TOOL_OWNED = (".ai/", ".githooks/")
+HOOKS_PATH = ".githooks"
 
 
 def die(msg: str) -> None:
@@ -82,7 +105,7 @@ def copy_tier(tier: str, dest: Path, ctx: dict[str, str], overwrite: bool) -> li
             continue
         rel = src.relative_to(src_root)
         target = dest / rel
-        if target.exists() and not overwrite:
+        if target.exists() and not overwrite and not rel.as_posix().startswith(TOOL_OWNED):
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         if src.suffix in TEXT_SUFFIXES:
@@ -152,10 +175,21 @@ def git(dest: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
     return subprocess.run(["git", *args], cwd=dest, capture_output=True, text=True, check=check)
 
 
-def install_post_commit(dest: Path) -> None:
-    hook = dest / ".git" / "hooks" / "post-commit"
-    hook.write_text(POST_COMMIT, encoding="utf-8", newline="\n")
-    hook.chmod(0o755)
+def cumulative(table: dict, tier: str) -> list:
+    return [item for t in tiers_upto(tier) for item in table[t]]
+
+
+def tier_meta(tier: str) -> dict:
+    return {"tier": tier, "workrealm_version": VERSION, "protected": PROTECTED[tier],
+            "checks": cumulative(CHECKS, tier), "naming": cumulative(NAMING, tier)}
+
+
+def install_githooks(dest: Path) -> None:
+    """Point git at the versioned .githooks/. core.hooksPath is local config, so a fresh
+    clone needs `git config core.hooksPath .githooks` once."""
+    for hook in (dest / HOOKS_PATH).iterdir():
+        hook.chmod(0o755)
+    git(dest, "config", "core.hooksPath", HOOKS_PATH)
 
 
 def create_remote(dest: Path, name: str) -> str:
@@ -187,13 +221,13 @@ def cmd_new(args: argparse.Namespace) -> None:
         copy_tier(t, dest, ctx, overwrite=True)  # later tiers replace earlier templates
     write_agents_md(dest, tier, ctx)
     write_settings(dest, tier)
-    write_meta(dest, {"workrealm_version": VERSION, "name": args.name, "tier": tier,
-                      "created": today, "lang": args.lang, "protected": PROTECTED[tier]})
+    write_meta(dest, {"name": args.name, "created": today, "lang": args.lang, **tier_meta(tier)})
 
     git(dest, "init", "-b", "main", "-q")
-    install_post_commit(dest)
+    install_githooks(dest)
     git(dest, "add", "-A")
-    git(dest, "commit", "-q", "-m", f"chore: scaffold {tier} workspace from WorkRealm {VERSION}")
+    git(dest, "commit", "-q", "-m", f"chore: scaffold {tier} workspace from WorkRealm {VERSION}",
+        "-m", "Generated structure, rules and hooks; nothing project-specific yet.")
 
     remote = args.remote if args.remote is not None else REMOTE_BY_DEFAULT[tier]
     status = create_remote(dest, args.name) if remote else "no remote (pass --remote to create one)"
@@ -217,12 +251,16 @@ def cmd_upgrade(args: argparse.Namespace) -> None:
         added += copy_tier(t, dest, ctx, overwrite=False)  # never clobber the user's files
     write_agents_md(dest, target, ctx)
     write_settings(dest, target)
-    meta.update({"tier": target, "workrealm_version": VERSION, "protected": PROTECTED[target]})
+    meta.update(tier_meta(target))
     write_meta(dest, meta)
-    print(f"Upgraded {dest.name}: {current} -> {target}. Added {len(added)} file(s):")
+    install_githooks(dest)
+    print(f"Upgraded {dest.name}: {current} -> {target}. Wrote {len(added)} file(s):")
     for a in added:
         print(f"  + {a}")
-    print("AGENTS.md rules block and .claude/settings.json hooks rewritten. Review, then commit.")
+    print("AGENTS.md rules block, .claude/settings.json hooks and tool files (.ai/, .githooks/) refreshed.\n"
+          "Review, then commit:\n"
+          f'  python .ai/checkpoint.py "chore: upgrade to {target} tier" '
+          f'"WorkRealm {VERSION} upgrade: adds the {target}-tier structure, rules and checks."')
 
 
 def main(argv: list[str] | None = None) -> None:

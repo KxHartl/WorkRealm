@@ -1,39 +1,38 @@
 #!/usr/bin/env python3
-"""Commit everything as one logical unit, after a secrets check.
+"""Commit everything as one logical unit, after the policy checks.
 
     python .ai/checkpoint.py "feat: what changed" ["body: why it changed"]
 
-The post-commit hook pushes. Staging is `git add -A`, so .gitignore is the
-filter -- and this script is the second filter for files that slipped past it.
+Staging is `git add -A`, so .gitignore is the first filter and .ai/policy.py the
+second. On a block, everything is unstaged again so nothing half-checked lingers.
+The git hooks run the same checks, and post-commit pushes.
 """
-import re
 import subprocess
 import sys
+from pathlib import Path
 
-SECRETISH = re.compile(r"(^|/)(\.env(\..+)?|.*\.pem|.*\.key|id_rsa[^/]*|credentials\.json)$", re.I)
-ALLOWED = {".env.example"}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from policy import ROOT, report, safe_stderr, staged_findings  # noqa: E402
 
 
 def git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], capture_output=True, text=True)
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
 
 
 def main() -> int:
+    safe_stderr()
     if len(sys.argv) < 2 or not sys.argv[1].strip():
         print('usage: python .ai/checkpoint.py "type: subject" ["body"]', file=sys.stderr)
         return 1
 
     git("add", "-A")
-    staged = git("diff", "--cached", "--name-only").stdout.splitlines()
-    if not staged:
+    if not git("diff", "--cached", "--name-only").stdout.strip():
         print("checkpoint: nothing to commit.")
         return 0
 
-    leaks = [f for f in staged if SECRETISH.search(f) and f.rsplit("/", 1)[-1] not in ALLOWED]
-    if leaks:
+    if report(staged_findings(ROOT), "checkpoint"):
         git("reset", "-q")
-        print("checkpoint: REFUSED -- these look like secrets:\n  " + "\n  ".join(leaks)
-              + "\nAdd them to .gitignore. Nothing was committed.", file=sys.stderr)
+        print("checkpoint: nothing was committed.", file=sys.stderr)
         return 2
 
     msg = ["-m", sys.argv[1]] + (["-m", sys.argv[2]] if len(sys.argv) > 2 else [])

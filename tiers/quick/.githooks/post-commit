@@ -1,0 +1,6 @@
+#!/bin/sh
+# Installed by WorkRealm (core.hooksPath = .githooks). Push every commit at once:
+# a local-only commit is one disk failure from gone. Silent no-op without a remote.
+git remote get-url origin >/dev/null 2>&1 || exit 0
+branch=$(git symbolic-ref --short -q HEAD) || exit 0
+git push -q origin "$branch" >/dev/null 2>&1 &
