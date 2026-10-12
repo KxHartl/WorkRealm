@@ -22,7 +22,7 @@ _The one thing being worked on now, and the gate it is heading for._
 
 ## Blocking, in order
 
-_Items from `30-decisions/OPEN-ITEMS.md` that stop progress, most severe first._
+_Items from `docs/decisions/OPEN-ITEMS.md` that stop progress, most severe first. Current plan: `docs/plans/`._
 
 ## Waiting on the owner
 

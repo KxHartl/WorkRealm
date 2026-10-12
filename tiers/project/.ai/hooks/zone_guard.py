@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""PreToolUse hook -- keep the zones meaning something.
+"""PreToolUse hook -- every document keeps one home.
 
-Ported from KEV-Ai-Architecture. The check is `write_verdict(..., "zone_placement", ...)`
-in .ai/policy.py, shared with the git pre-commit hook. It blocks two category errors:
+The check is `write_verdict(..., "zone_placement", ...)` in .ai/policy.py, shared with
+the git pre-commit hook. Folders come from "zones" in .workrealm.json. It blocks two
+category errors:
 
-  * a decision document (ADR-*, DECISIONS, OPEN-ITEMS, CONSTRAINTS) outside
-    30-decisions/ or 90-archive/
-  * CREATING a document whose name already exists in another zone (a copy)
+  * a decision document (DECISIONS.md, OPEN-ITEMS.md, CONSTRAINTS.md, ADR-*) outside the
+    decisions folder (or the archive / a release snapshot)
+  * CREATING a file whose name already exists in another folder (a copy)
 
-and notes edits to 30-decisions/. Structural names (README.md etc.) and edits to
-existing files are exempt -- without that the guard refuses legitimate writes forever.
+and notes edits to settled decisions. Structural names (README.md etc.), edits to existing
+files and release snapshots are exempt; without that a guard refuses legitimate writes.
 
 Exit 0 = allow (notes printed), exit 2 = block.
 """

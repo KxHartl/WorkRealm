@@ -20,4 +20,4 @@ _The one thing being worked on now._
 ## Waiting on someone
 
 _Decisions or inputs that block progress, and who owns them. Detail lives in
-`30-decisions/OPEN-ITEMS.md`._
+`docs/decisions/OPEN-ITEMS.md`._

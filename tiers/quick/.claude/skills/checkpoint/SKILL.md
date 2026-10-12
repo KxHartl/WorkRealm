@@ -10,7 +10,9 @@ Commit the work done so far as one logical unit (rule R-COMMIT in AGENTS.md).
 2. Choose a Conventional Commit subject: `feat|fix|docs|chore|refactor|test: what changed`.
    Use `$ARGUMENTS` as the subject if it was given and fits.
 3. Write a one- or two-sentence body that says **why**. A body is required when
-   `30-decisions/` changed.
-4. Run `python .ai/checkpoint.py "<subject>" "<body>"`.
+   `docs/decisions/` changed.
+4. Run `python .ai/checkpoint.py "<subject>" "<body>"` as a command of its own. Never add
+   `--agent` yourself: the hook marks a subagent's commits, and work done at the user's prompt
+   stays unmarked.
 5. If it is refused, read the rule ID in the message, fix the cause, and run it again.
    Never bypass the check.

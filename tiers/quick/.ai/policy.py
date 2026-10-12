@@ -6,17 +6,21 @@ file, so a rule cannot drift between layers:
 
     git pre-commit   python .ai/policy.py pre-commit       (binds every tool and human)
     git commit-msg   python .ai/policy.py commit-msg FILE
-    Claude hooks     .ai/hooks/*.py import write_verdict()
-    checkpoint.py    imports staged_findings()
+    Claude hooks     .ai/hooks/*.py call hook_main() / bash_hook_main()
+    checkpoint.py    calls staged_findings()
 
-Which checks run is data: the "checks" list in .workrealm.json, set per tier.
-Rule IDs (R-...) point at the rule text in AGENTS.md; the text is not repeated here.
+Everything workspace-specific is data in .workrealm.json: which checks run ("checks"),
+where things live ("layout"), what is write-once ("protected"), naming ("naming"),
+and which folders a document may not be copied between ("zones"). Rule IDs (R-...)
+point at the rule text in AGENTS.md; the text is not repeated here.
 
 Exit codes: 0 = pass (warnings may print), 1 = blocked.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -37,32 +41,35 @@ ENFORCES = {
     "R-DECISIONS": {"git": ["decision_register", "decision_commit_body"]},
     "R-ZONES": {"git": ["zone_placement"], "claude": ["zone_guard.py"]},
     "R-EVIDENCE": {"git": ["protected_paths"], "claude": ["protect_paths.py", "bash_guard.py"]},
+    "R-INBOX": {"claude": ["protect_paths.py", "bash_guard.py"]},
     "R-ADR": {"git": ["adr_format"]},
+}
+
+# Defaults for a workspace whose .workrealm.json predates "layout"; wr.py writes the real one.
+DEFAULT_LAYOUT = {
+    "notes": "docs/notes", "decisions": "docs/decisions", "adr": "docs/decisions/adr",
+    "plans": "docs/plans", "sources": "references", "sources_log": "references/SOURCES_LOG.md",
+    "inbox": "references/inbox", "data_raw": "data/raw", "experiments": "experiments",
+    "reports": "reports", "releases": "releases", "archive": "archive",
 }
 
 SECRETISH = re.compile(r"(^|/)(\.env(\..+)?|.*\.pem|.*\.key|id_rsa[^/]*|credentials\.json)$", re.I)
 SECRET_ALLOWED = {".env.example"}
 STRUCTURAL = {
-    "README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "INDEX.md", "MANIFEST.md", "STATE.md",
-    "__init__.py", "conftest.py", ".gitkeep", ".gitignore",
+    "README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "INDEX.md", "MANIFEST.md", "SUMMARY.md",
+    "STATE.md", "TEMPLATE.md", "__init__.py", "conftest.py", ".gitkeep", ".gitignore",
 }
-ZONES = ("10-research", "20-prompts", "30-decisions", "40-lab", "50-release", "90-archive")
-# Releases are snapshots: they hold copies of documents on purpose, decisions included.
-SNAPSHOT_ZONES = ("50-release",)
-DECISION_HOMES = ("30-decisions", "90-archive") + SNAPSHOT_ZONES
-DECISION_DOC = re.compile(r"^(ADR-\d+|DECISIONS|OPEN-ITEMS|CONSTRAINTS)", re.I)
-ADR_FILE = re.compile(r"^ADR-\d+.*\.md$")
+DECISION_DOC = re.compile(r"^(DECISIONS|OPEN-ITEMS|CONSTRAINTS)\.md$|^ADR-\d+", re.I)
+ADR_FILE = re.compile(r"^\d{4}-.+\.md$")
 ADR_SECTIONS = ("## Decision", "## Alternatives", "## What would change my mind",
                 "## Cost of reversal", "## Decision log")
 CONVENTIONAL = re.compile(
     r"^(feat|fix|docs|chore|refactor|test|perf|build|ci|style|revert)(\([\w./-]+\))?!?: \S")
 EXEMPT_MSG = re.compile(r"^(Merge |Revert \"|fixup! |squash! |amend! )")
+AI_TAG = "\U0001F916 [AI]"  # robot face: marks a commit whose work a subagent did
+AI_TRAILER = re.compile(r"^AI-Agent:\s*\S+", re.M)
 NON_ENGLISH = re.compile("[\u010d\u0107\u017e\u0161\u0111\u010c\u0106\u017d\u0160\u0110]")  # Croatian letters
 TEXT_EXT = {".md", ".txt", ".py", ".ps1", ".sh", ".json", ".yaml", ".yml", ".toml", ".js", ".ts"}
-SOURCES = "10-research/sources"
-SOURCES_LOG = "10-research/SOURCES_LOG.md"
-DECISIONS = "30-decisions/DECISIONS.md"
-OPEN_ITEMS = "30-decisions/OPEN-ITEMS.md"
 
 
 class Finding:
@@ -104,6 +111,10 @@ def load_meta(root: Path) -> dict:
         return {}
 
 
+def layout(meta: dict) -> dict:
+    return {**DEFAULT_LAYOUT, **meta.get("layout", {})}
+
+
 def staged_changes(root: Path) -> list[tuple[str, str]]:
     """(status, path) for every staged change. Renames count as delete + add."""
     out = git(root, "diff", "--cached", "--name-status", "--no-renames", "-z").stdout
@@ -120,9 +131,40 @@ def head_text(root: Path, path: str) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
-def under(path: str, prefix: str) -> bool:
-    prefix = prefix.rstrip("/")
-    return path == prefix or path.startswith(prefix + "/")
+def under(path: str, pattern: str) -> bool:
+    """path is pattern or below it. Pattern segments may use * and ? (experiments/*/results)."""
+    want = pattern.strip("/").split("/")
+    have = path.strip("/").split("/")
+    return len(have) >= len(want) and all(fnmatch.fnmatchcase(h, w) for h, w in zip(have, want))
+
+
+def below(path: str, pattern: str) -> str | None:
+    """The first path segment below pattern, or None if path is not strictly below it."""
+    want = pattern.strip("/").split("/")
+    have = path.strip("/").split("/")
+    if len(have) > len(want) and all(fnmatch.fnmatchcase(h, w) for h, w in zip(have, want)):
+        return have[len(want)]
+    return None
+
+
+def protected_by(meta: dict, path: str) -> str | None:
+    """The write-once pattern covering path, unless a '!pattern' exclusion carves it out.
+    A folder's README.md and the sources log are append-to documents, never evidence."""
+    if name_of(path) == "README.md" or path == layout(meta)["sources_log"]:
+        return None
+    rules = meta.get("protected", [])
+    if any(r.startswith("!") and under(path, r[1:]) for r in rules):
+        return None
+    return next((r for r in rules if not r.startswith("!") and under(path, r)), None)
+
+
+def evidence_rule(meta: dict, pattern: str) -> str:
+    return "R-SOURCES" if under(pattern, layout(meta)["sources"]) else "R-EVIDENCE"
+
+
+def zone_of(meta: dict, path: str) -> str | None:
+    zones = [z for z in meta.get("zones", []) if under(path, z)]
+    return max(zones, key=len) if zones else None
 
 
 def name_of(path: str) -> str:
@@ -148,6 +190,11 @@ def log_rows(text: str) -> int:
     return max(0, len(rows) - 2)
 
 
+def decision_homes(meta: dict) -> list[str]:
+    lay = layout(meta)
+    return [lay["decisions"], lay["archive"]] + meta.get("snapshots", [])
+
+
 # ---------------------------------------------------------------- staged checks
 
 def check_secrets(root, meta, changes):
@@ -159,29 +206,32 @@ def check_secrets(root, meta, changes):
 
 def check_protected_paths(root, meta, changes):
     for status, path in changes:
-        if status == "A":
-            continue
-        for prefix in meta.get("protected", []):
-            if under(path, prefix):
-                rule = "R-SOURCES" if under(prefix, SOURCES) else "R-EVIDENCE"
-                yield block(rule, f"{path} is under write-once {prefix}/ and was "
-                                  f"{'deleted' if status == 'D' else 'modified'}. Restore it "
-                                  f"(`git restore --staged --worktree {path}`); derived work is a NEW file.")
+        pattern = protected_by(meta, path) if status != "A" else None
+        if pattern:
+            yield block(evidence_rule(meta, pattern),
+                        f"{path} is under write-once {pattern}/ and was "
+                        f"{'deleted' if status == 'D' else 'modified'}. Restore it "
+                        f"(`git restore --staged --worktree {path}`); derived work is a NEW file.")
 
 
 def check_sources_logged(root, meta, changes):
+    lay = layout(meta)
+    sources, log_path = lay["sources"], lay["sources_log"]
     log = None
     for status, path in changes:
-        if path == SOURCES_LOG and status == "M":
+        if path == log_path and status == "M":
             numstat = git(root, "diff", "--cached", "--numstat", "--", path).stdout.split()
             if numstat and numstat[1] not in ("0", "-"):
-                yield block("R-SOURCES", f"{SOURCES_LOG} is append-only; this commit removes lines from it.")
-        if status == "A" and under(path, SOURCES) and name_of(path) not in STRUCTURAL:
-            log = staged_text(root, SOURCES_LOG) if log is None else log
-            rel = path[len(SOURCES) + 1:]
-            if path not in log and rel not in log:
-                yield block("R-SOURCES", f"{path} is not in {SOURCES_LOG}. Add a line: "
-                                         f"`[date] -- [URL] -- {path} -- [description]`.")
+                yield block("R-SOURCES", f"{log_path} is append-only; this commit removes lines from it.")
+        if status != "A" or path == log_path or name_of(path) in STRUCTURAL \
+                or not under(path, sources) or protected_by(meta, path) is None:
+            continue  # only evidence needs a log line; the inbox does not
+        log = staged_text(root, log_path) if log is None else log
+        rel = path[len(sources.rstrip("/")) + 1:]
+        if path not in log and rel not in log:
+            yield block("R-SOURCES", f"{path} is not in {log_path}. Add a line: "
+                                     f"`[date] -- [URL] -- {path} -- [description]` "
+                                     "(python .ai/wr.py source add/promote does it for you).")
 
 
 def check_naming(root, meta, changes):
@@ -189,78 +239,80 @@ def check_naming(root, meta, changes):
         if status != "A" or name_of(path) in STRUCTURAL:
             continue
         for rule in meta.get("naming", []):
-            base = rule["under"].rstrip("/")
-            if not path.startswith(base + "/"):
-                continue
-            first = path[len(base) + 1:].split("/", 1)[0]
-            if not re.fullmatch(rule["pattern"], first):
+            first = below(path, rule["under"])
+            if first is not None and first not in STRUCTURAL and not re.fullmatch(rule["pattern"], first):
                 yield block("R-PLACE", f"{path}: '{first}' does not follow the naming rule for "
-                                       f"{base}/ (e.g. {rule['example']}). Rename it with `git mv`.")
+                                       f"{rule['under']}/ (e.g. {rule['example']}). Rename it with `git mv`.")
 
 
 def check_decision_register(root, meta, changes):
+    lay = layout(meta)
+    decisions = f"{lay['decisions']}/DECISIONS.md"
+    open_items = f"{lay['decisions']}/OPEN-ITEMS.md"
     touched = {path for status, path in changes if status != "D"}
-    if DECISIONS in touched:
-        new, old = staged_text(root, DECISIONS), head_text(root, DECISIONS)
+    if decisions in touched:
+        new, old = staged_text(root, decisions), head_text(root, decisions)
         new_rows = table_rows(new, "D")
         for rid, cells in new_rows.items():
             if len(cells) >= 4 and cells[2] and not (cells[1] and cells[3]):
-                yield block("R-DECISIONS", f"{DECISIONS} {rid}: a decision needs its date and the strongest "
+                yield block("R-DECISIONS", f"{decisions} {rid}: a decision needs its date and the strongest "
                                            "alternative with why it lost.")
         for rid, cells in table_rows(old, "D").items():
             if len(cells) >= 3 and cells[2] and new_rows.get(rid) != cells:
-                yield block("R-DECISIONS", f"{DECISIONS} {rid} was changed or removed. Settled rows are never "
+                yield block("R-DECISIONS", f"{decisions} {rid} was changed or removed. Settled rows are never "
                                            "edited: add a new row that names it under 'Supersedes'.")
-    if OPEN_ITEMS in touched:
-        for rid, cells in table_rows(staged_text(root, OPEN_ITEMS), "O", stop_at="## Closed").items():
+    if open_items in touched:
+        for rid, cells in table_rows(staged_text(root, open_items), "O", stop_at="## Closed").items():
             if len(cells) >= 4 and cells[1] and not (cells[2] and cells[3]):
-                yield block("R-DECISIONS", f"{OPEN_ITEMS} {rid}: an open item needs an owner and a trigger "
+                yield block("R-DECISIONS", f"{open_items} {rid}: an open item needs an owner and a trigger "
                                            "(an item without a trigger is a wish).")
 
 
 def check_zone_placement(root, meta, changes):
-    added = [path for status, path in changes if status == "A"]
+    lay = layout(meta)
+    homes = decision_homes(meta)
+    snapshots = meta.get("snapshots", [])
     tracked = None
     for status, path in changes:
         if status == "D":
             continue
-        name = name_of(path)
-        zone = path.split("/", 1)[0] if path.split("/", 1)[0] in ZONES else None
-        if DECISION_DOC.search(name) and name != "ADR-TEMPLATE.md" and zone not in DECISION_HOMES:
-            yield block("R-ZONES", f"{path} is a decision document outside 30-decisions/. If it is not "
-                                   "settled yet it is research: 10-research/notes/.")
-    for path in added:
-        name, zone = name_of(path), path.split("/", 1)[0]
-        if zone not in ZONES or zone in SNAPSHOT_ZONES or name in STRUCTURAL:
+        if DECISION_DOC.search(name_of(path)) and not any(under(path, h) for h in homes):
+            yield block("R-ZONES", f"{path} is a decision document outside {lay['decisions']}/. If it is "
+                                   f"not settled yet it is a note: {lay['notes']}/.")
+    for status, path in changes:
+        zone = zone_of(meta, path) if status == "A" else None
+        if not zone or name_of(path) in STRUCTURAL or any(under(path, s) for s in snapshots):
             continue
         if tracked is None:
-            tracked = git(root, "ls-files", "-z").stdout.split("\0")
-        dups = [t for t in tracked if t and t != path and name_of(t) == name
-                and t.split("/", 1)[0] in ZONES and t.split("/", 1)[0] not in (zone,) + SNAPSHOT_ZONES]
+            tracked = [t for t in git(root, "ls-files", "-z").stdout.split("\0") if t]
+        dups = [t for t in tracked if t != path and name_of(t) == name_of(path)
+                and zone_of(meta, t) not in (None, zone) and not any(under(t, s) for s in snapshots)]
         if dups:
-            yield block("R-ZONES", f"{path} duplicates {dups[0]}. A document lives in one zone: "
+            yield block("R-ZONES", f"{path} duplicates {dups[0]}. A document lives in one place: "
                                    "move it with `git mv`, never copy.")
 
 
 def check_adr_format(root, meta, changes):
+    adr_dir = layout(meta)["adr"]
     for status, path in changes:
-        name = name_of(path)
-        if status == "D" or not under(path, "30-decisions") or not ADR_FILE.match(name) \
-                or name == "ADR-TEMPLATE.md":
+        if status == "D" or below(path, adr_dir) != name_of(path) or not ADR_FILE.match(name_of(path)):
             continue
         text = staged_text(root, path)
         missing = [s for s in ADR_SECTIONS if not re.search(rf"^{re.escape(s)}\b", text, re.M)]
         if missing:
-            yield block("R-ADR", f"{path} is missing: {', '.join(missing)}. Start from ADR-TEMPLATE.md.")
+            yield block("R-ADR", f"{path} is missing: {', '.join(missing)}. Start from {adr_dir}/TEMPLATE.md "
+                                 "(python .ai/wr.py adr new does).")
         elif status == "M" and log_rows(text) <= log_rows(head_text(root, path)):
             yield warn("R-ADR", f"{path} changed without a new decision-log row. If the decision moved, "
                                 "add one (date, change, previous position, reason).")
 
 
 def check_english(root, meta, changes):
+    lay = layout(meta)
+    skip = [lay["sources"], lay["data_raw"]]
     hits = []
     for status, path in changes:
-        if status == "D" or under(path, SOURCES) or Path(path).suffix not in TEXT_EXT:
+        if status == "D" or any(under(path, s) for s in skip) or Path(path).suffix not in TEXT_EXT:
             continue
         diff = git(root, "diff", "--cached", "-U0", "--", path).stdout
         if any(ln.startswith("+") and not ln.startswith("+++") and NON_ENGLISH.search(ln)
@@ -297,19 +349,26 @@ def staged_findings(root: Path = ROOT) -> list[Finding]:
 # ---------------------------------------------------------------- commit message
 
 def message_findings(message: str, root: Path = ROOT) -> list[Finding]:
-    enabled = load_meta(root).get("checks", [])
+    meta = load_meta(root)
+    enabled = meta.get("checks", [])
     lines = [ln for ln in message.splitlines() if not ln.startswith("#")]
     subject = lines[0].strip() if lines else ""
     body = "\n".join(lines[1:]).strip()
     found = []
     if EXEMPT_MSG.match(subject):
         return found
-    if "commit_msg" in enabled and not CONVENTIONAL.match(subject):
-        found.append(block("R-COMMIT", f"subject {subject!r} is not a Conventional Commit. "
-                                       "Use `type: what changed` (feat, fix, docs, chore, refactor, test, ...)."))
-    if "decision_commit_body" in enabled and not body \
-            and any(under(p, "30-decisions") for _, p in staged_changes(root)):
-        found.append(block("R-DECISIONS", "this commit changes 30-decisions/; the body must say why "
+    if "commit_msg" in enabled:
+        if not CONVENTIONAL.match(subject):
+            found.append(block("R-COMMIT", f"subject {subject!r} is not a Conventional Commit. "
+                                           "Use `type: what changed` (feat, fix, docs, chore, refactor, test, ...)."))
+        if (AI_TAG in subject) != bool(AI_TRAILER.search(body)):
+            found.append(block("R-COMMIT", f"the {AI_TAG} tag and the `AI-Agent:` trailer go together, and only "
+                                           "on commits a subagent made. Use python .ai/checkpoint.py."))
+    decisions = layout(meta)["decisions"]
+    body_text = AI_TRAILER.sub("", body).strip()
+    if "decision_commit_body" in enabled and not body_text \
+            and any(under(p, decisions) for _, p in staged_changes(root)):
+        found.append(block("R-DECISIONS", f"this commit changes {decisions}/; the body must say why "
                                           "(it is the record of why a decision moved)."))
     return found
 
@@ -319,32 +378,39 @@ def message_findings(message: str, root: Path = ROOT) -> list[Finding]:
 def write_verdict(root: Path, check: str, rel: str, exists: bool) -> tuple[int, str]:
     """Verdict on a single file write about to happen: (exit code, message)."""
     meta = load_meta(root)
+    lay = layout(meta)
     if check == "protected_paths":
-        for prefix in meta.get("protected", []):
-            if not under(rel, prefix):
-                continue
-            if not exists:
-                return 0, f"NOTE: creating {rel} under protected {prefix}/ -- it becomes read-only once written."
-            rule = "R-SOURCES" if under(prefix, SOURCES) else "R-EVIDENCE"
-            return 2, (f"BLOCKED [{rule}] {rel}: {prefix}/ is write-once; existing files there are evidence.\n"
-                       "  Derived work goes to 10-research/notes/; a re-run or new version is a NEW file or folder.")
+        pattern = protected_by(meta, rel)
+        if pattern and exists:
+            return 2, (f"BLOCKED [{evidence_rule(meta, pattern)}] {rel}: {pattern}/ is write-once; existing "
+                       f"files there are evidence.\n  Derived work goes to {lay['notes']}/; a re-run or new "
+                       "version is a NEW file or folder.")
+        if pattern and "inbox" in meta.get("checks", []) and under(pattern, lay["sources"]):
+            return 2, (f"BLOCKED [R-INBOX] {rel}: new material goes to {lay['inbox']}/ first "
+                       "(python .ai/wr.py source add ...). Promotion into evidence is the owner's call: "
+                       "python .ai/wr.py source promote <file>.")
+        if pattern:
+            return 0, f"NOTE: creating {rel} under protected {pattern}/ -- it becomes read-only once written."
     if check == "zone_placement":
         name = name_of(rel)
-        head = rel.split("/", 1)[0]
-        zone = head if head in ZONES else None
-        if DECISION_DOC.search(name) and name != "ADR-TEMPLATE.md" and zone not in DECISION_HOMES:
-            return 2, (f"BLOCKED [R-ZONES] {rel}: decision documents live in 30-decisions/. If it is not "
-                       "settled yet, it is research -- 10-research/notes/.")
-        if zone and zone not in SNAPSHOT_ZONES and not exists and name not in STRUCTURAL:
-            for other in ZONES:
-                if other == zone or other in SNAPSHOT_ZONES or not (root / other).is_dir():
+        if DECISION_DOC.search(name) and not any(under(rel, h) for h in decision_homes(meta)):
+            return 2, (f"BLOCKED [R-ZONES] {rel}: decision documents live in {lay['decisions']}/. If it is "
+                       f"not settled yet, it is a note -- {lay['notes']}/.")
+        zone = zone_of(meta, rel)
+        snapshots = meta.get("snapshots", [])
+        if zone and not exists and name not in STRUCTURAL and not any(under(rel, s) for s in snapshots):
+            for other in meta.get("zones", []):
+                if other == zone or under(other, zone) or under(zone, other) or "*" in other \
+                        or not (root / other).is_dir():
                     continue
                 for dup in (root / other).rglob(name):
-                    if dup.is_file():
-                        return 2, (f"BLOCKED [R-ZONES] {rel}: '{name}' already exists at "
-                                   f"{dup.relative_to(root).as_posix()}. Move it with `git mv`; never copy.")
-        if zone == "30-decisions" and exists:
-            return 0, (f"NOTE: editing {rel} -- the settled zone. If the decision moves, add a decision-log "
+                    dup_rel = dup.relative_to(root).as_posix()
+                    if dup.is_file() and zone_of(meta, dup_rel) == other \
+                            and not any(under(dup_rel, s) for s in snapshots):
+                        return 2, (f"BLOCKED [R-ZONES] {rel}: '{name}' already exists at {dup_rel}. "
+                                   "Move it with `git mv`; never copy.")
+        if under(rel, lay["decisions"]) and exists:
+            return 0, (f"NOTE: editing {rel} -- settled decisions. If a decision moves, add a decision-log "
                        "row (ADR) or a superseding row (DECISIONS.md), and say why in the commit body.")
     return 0, ""
 
@@ -356,94 +422,147 @@ DESTRUCTIVE = {
     "remove-item", "move-item", "rename-item", "set-content", "add-content", "out-file", "clear-content",
     "ri", "mi", "rni", "sc", "ac", "clc",
 }
+CREATING = {"cp", "copy", "mv", "move", "curl", "wget", "tee", "copy-item", "cpi", "move-item", "mi",
+            "invoke-webrequest", "iwr", "out-file", "set-content"}
 NO_VERIFY = re.compile(r"\bgit\b[^;&|\n]*\s(commit|merge|push|rebase|am|cherry-pick)\b[^;&|\n]*\s--no-verify\b")
 COMMIT_N = re.compile(r"\bgit\b[^;&|\n]*\scommit\b[^;&|\n]*\s-[a-zA-Z]*n[a-zA-Z]*\b")
+GIT_COMMIT = re.compile(r"\bgit\b[^;&|\n]*\scommit\b")
+CHECKPOINT = re.compile(r"(\.ai[/\\]checkpoint\.py|\.ai[/\\]wr\.py\s+checkpoint)\b")
+ONLY_CHECKPOINT = re.compile(
+    r"""^\s*(python3?|py)\s+\S*(\.ai[/\\]checkpoint\.py|\.ai[/\\]wr\.py\s+checkpoint)"""
+    r"""((\s+("[^"]*"|'[^']*'|[^\s"';&|<>`$]+))*)\s*$""")
 
 
 def _clean(token: str) -> str:
     return token.strip("\"'`()").replace("\\", "/")
 
 
-def _protected_target(root: Path, protected: list[str], token: str) -> tuple[str, str] | None:
-    """(rel, prefix) if token names an EXISTING path under a protected prefix."""
+def _rel(root: Path, token: str) -> tuple[str, Path] | None:
     token = _clean(token)
-    if not token or token.startswith("-"):
+    if not token or token.startswith("-") or "://" in token:
         return None
     try:
         path = (root / token).resolve()
-        rel = path.relative_to(root).as_posix()
+        return path.relative_to(root).as_posix(), path
     except (ValueError, OSError):
         return None
-    for prefix in protected:
-        base = prefix.rstrip("/")
-        if not under(rel, base):
-            continue
-        if rel != base and path.exists():
-            return rel, prefix
-        if rel == base and path.is_dir() and any(path.iterdir()):  # the whole protected folder
-            return rel, prefix
+
+
+def _destroys(meta: dict, root: Path, token: str) -> tuple[str, str] | None:
+    """(rel, pattern) if token names an EXISTING write-once path."""
+    hit = _rel(root, token)
+    if not hit:
+        return None
+    rel, path = hit
+    pattern = protected_by(meta, rel)
+    if not pattern or not path.exists():
+        return None
+    if path.is_dir() and not any(path.iterdir()):
+        return None
+    return rel, pattern
+
+
+def _bypasses_inbox(meta: dict, root: Path, token: str) -> str | None:
+    hit = _rel(root, token)
+    if not hit:
+        return None
+    rel, _ = hit
+    pattern = protected_by(meta, rel)
+    if pattern and under(pattern, layout(meta)["sources"]) and rel != pattern.rstrip("/"):
+        return rel
     return None
 
 
-def bash_verdict(root: Path, command: str) -> tuple[int, str]:
-    """Verdict on a shell command about to run: (exit code, message). Heuristic, so it only
-    blocks clear cases; the pre-commit check catches the rest at commit time."""
+def bash_verdict(root: Path, command: str, agent: str | None = None) -> tuple[int, str, str | None]:
+    """Verdict on a shell command about to run: (exit code, message, rewritten command or None).
+    Heuristic, so it only blocks clear cases; the pre-commit check catches the rest at commit time.
+    `agent` is the subagent type when a subagent runs the command, None for the main agent."""
     if NO_VERIFY.search(command) or COMMIT_N.search(command):
         return 2, ("BLOCKED [R-COMMIT] --no-verify skips the checks that bind every tool. Fix what the "
-                   "check refuses instead; if the check itself is wrong, say so to the user.")
+                   "check refuses instead; if the check itself is wrong, say so to the user."), None
     if "core.hookspath" in command.lower() and ".githooks" not in command:
-        return 2, "BLOCKED [R-COMMIT] core.hooksPath must stay .githooks; it is what runs the checks."
-    protected = load_meta(root).get("protected", [])
-    if not protected:
-        return 0, ""
-    hits = []
+        return 2, "BLOCKED [R-COMMIT] core.hooksPath must stay .githooks; it is what runs the checks.", None
+    rewritten = None
+    if CHECKPOINT.search(command):
+        if agent is None and re.search(r"\s--agent\b", command):
+            return 2, ("BLOCKED [R-COMMIT] --agent marks work a subagent did on its own. Work done at the "
+                       "user's prompt is committed unmarked."), None
+        if agent is not None and not re.search(r"\s--agent\b", command):
+            m = CHECKPOINT.search(command)
+            if not ONLY_CHECKPOINT.match(command):
+                return 2, ("BLOCKED [R-COMMIT] run the checkpoint as a command of its own, so it can be "
+                           "marked as your work: python .ai/checkpoint.py \"type: what\" \"why\""), None
+            rewritten = f"{command[:m.end()]} --agent {agent}{command[m.end():]}"
+    elif agent is not None and GIT_COMMIT.search(command):
+        return 2, ("BLOCKED [R-COMMIT] subagents commit with python .ai/checkpoint.py \"type: what\" \"why\"; "
+                   "it runs the checks and marks the commit as a subagent's work."), None
+
+    meta = load_meta(root)
+    if not meta.get("protected"):
+        return 0, "", rewritten
+    inbox = "inbox" in meta.get("checks", [])
+    hits, bypass = [], []
     for m in REDIRECT.finditer(command):
-        hit = _protected_target(root, protected, m.group(1))
-        if hit:
-            hits.append(hit)
+        target = m.group(1)
+        hits += [h for h in [_destroys(meta, root, target)] if h]
+        if inbox:
+            bypass += [b for b in [_bypasses_inbox(meta, root, target)] if b]
     for part in SEPARATORS.split(command):
         words = part.split()
         while words and re.fullmatch(r"\w+=\S*", words[0]):  # leading VAR=value
             words = words[1:]
         if not words:
             continue
-        verb = words[0].lower()
-        args = words[1:]
+        verb, args = words[0].lower(), words[1:]
         if verb == "git" and args[:1] and args[0] in ("rm", "mv"):
             verb, args = args[0], args[1:]
         elif verb == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args):
             verb = "rm"  # in-place edit counts as destructive
         if verb in DESTRUCTIVE:
-            hits += [h for h in (_protected_target(root, protected, a) for a in args) if h]
+            hits += [h for h in (_destroys(meta, root, a) for a in args) if h]
+        if inbox and verb in CREATING:
+            bypass += [b for b in (_bypasses_inbox(meta, root, a) for a in args) if b]
     if hits:
-        rel, prefix = hits[0]
-        rule = "R-SOURCES" if under(prefix, SOURCES) else "R-EVIDENCE"
-        return 2, (f"BLOCKED [{rule}] this command would change or remove {rel}; {prefix}/ is write-once.\n"
-                   "  Derived work goes to 10-research/notes/; a re-run or new version is a NEW file or folder.")
-    return 0, ""
+        rel, pattern = hits[0]
+        return 2, (f"BLOCKED [{evidence_rule(meta, pattern)}] this command would change or remove {rel}; "
+                   f"{pattern}/ is write-once.\n  Derived work goes to {layout(meta)['notes']}/; a re-run or "
+                   "new version is a NEW file or folder."), None
+    if bypass:
+        lay = layout(meta)
+        return 2, (f"BLOCKED [R-INBOX] this command would put {bypass[0]} straight into evidence. New "
+                   f"material goes to {lay['inbox']}/ (python .ai/wr.py source add ...); promoting it is the "
+                   "owner's call (python .ai/wr.py source promote <file>)."), None
+    return 0, "", rewritten
 
 
 def bash_hook_main() -> int:
     """Entry point for the Claude Code PreToolUse hook on Bash / PowerShell."""
-    import os
     safe_stderr()
     try:
         payload = json.load(sys.stdin)
     except Exception:
         return 0
-    command = (payload.get("tool_input", {}) or {}).get("command") or ""
+    tool_input = payload.get("tool_input", {}) or {}
+    command = tool_input.get("command") or ""
     if not command:
         return 0
     root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or ".").resolve()
-    code, msg = bash_verdict(root, command)
+    agent = (payload.get("agent_type") or "subagent") if payload.get("agent_id") else None
+    code, msg, rewritten = bash_verdict(root, command, re.sub(r"[^\w.-]", "-", agent) if agent else None)
     if msg:
         print(msg, file=sys.stderr)
+    if rewritten and code == 0:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": f"WorkRealm: commit marked as the work of subagent '{agent}'",
+            "updatedInput": {**tool_input, "command": rewritten},
+        }}))
     return code
 
 
 def hook_main(check: str) -> int:
-    """Entry point for a Claude Code PreToolUse hook. Never breaks the session."""
-    import os
+    """Entry point for a Claude Code PreToolUse write hook. Never breaks the session."""
     safe_stderr()
     try:
         payload = json.load(sys.stdin)

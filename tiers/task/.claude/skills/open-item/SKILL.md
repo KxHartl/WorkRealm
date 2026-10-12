@@ -1,6 +1,6 @@
 ---
 name: open-item
-description: Record an unresolved question in 30-decisions/OPEN-ITEMS.md with an owner and a trigger, or close one with its answer. Use when something must be answered by someone before work can proceed, or when two documents contradict each other.
+description: Record an unresolved question in docs/decisions/OPEN-ITEMS.md with an owner and a trigger, or close one with its answer. Use when something must be answered by someone before work can proceed, or when two documents contradict each other.
 argument-hint: "[question]"
 ---
 

@@ -55,14 +55,15 @@ class TestNew(Base):
         ws = self.new("t1")
         meta = json.loads((ws / ".workrealm.json").read_text())
         self.assertEqual(meta["tier"], "task")
-        self.assertTrue((ws / "30-decisions" / "DECISIONS.md").exists())
-        self.assertFalse((ws / "40-lab").exists())
+        self.assertTrue((ws / "docs" / "decisions" / "DECISIONS.md").exists())
+        self.assertTrue((ws / "references" / "SOURCES_LOG.md").exists())
+        self.assertFalse((ws / "experiments").exists())
 
     def test_quick_is_minimal(self):
         ws = self.new("q1", "--quick")
         self.assertTrue((ws / "STATE.md").exists())
         self.assertTrue((ws / ".ai" / "checkpoint.py").exists())
-        self.assertFalse((ws / "10-research").exists())
+        self.assertFalse((ws / "docs").exists())
         settings = json.loads((ws / ".claude" / "settings.json").read_text())
         self.assertEqual([m["matcher"] for m in settings["hooks"]["PreToolUse"]], ["Bash|PowerShell"])
         self.assertIn("SessionStart", settings["hooks"])
@@ -74,8 +75,9 @@ class TestNew(Base):
 
     def test_project_has_zones_and_guard(self):
         ws = self.new("p1", "--project")
-        for zone in ("10-research", "20-prompts", "30-decisions", "40-lab", "50-release", "90-archive"):
-            self.assertTrue((ws / zone).is_dir(), zone)
+        for folder in ("docs/notes", "docs/plans", "docs/decisions/adr", "references/inbox", "data/raw",
+                       "data/processed", "src", "tests", "reports", "experiments", "releases", "archive"):
+            self.assertTrue((ws / folder).is_dir(), folder)
         settings = json.loads((ws / ".claude" / "settings.json").read_text())
         cmds = [h["command"] for h in settings["hooks"]["PreToolUse"][0]["hooks"]]
         self.assertTrue(any("zone_guard" in c for c in cmds))
@@ -83,7 +85,7 @@ class TestNew(Base):
 
     def test_rules_are_cumulative(self):
         agents = (self.new("p2", "--project") / "AGENTS.md").read_text(encoding="utf-8")
-        for heading in ("## Context first", "## Where things go", "## Zones"):
+        for heading in ("## Context first", "## Where things go", "## The project layout"):
             self.assertIn(heading, agents)
         self.assertNotIn("{{", agents)
 
@@ -127,9 +129,9 @@ class TestUpgrade(Base):
         self.assertEqual((ws / "STATE.md").read_text(encoding="utf-8"), "my state")
         text = agents.read_text(encoding="utf-8")
         self.assertIn("- my own rule", text)
-        self.assertIn("## Zones", text)
+        self.assertIn("## The project layout", text)
         self.assertEqual(text.count("## Context first"), 1)
-        self.assertTrue((ws / "40-lab" / "README.md").exists())
+        self.assertTrue((ws / "experiments" / "README.md").exists())
         self.assertEqual(json.loads((ws / ".workrealm.json").read_text())["tier"], "project")
 
     def test_no_downgrade(self):
@@ -140,7 +142,7 @@ class TestUpgrade(Base):
 class TestHooks(Base):
     def test_protect_paths(self):
         ws = self.new("h1")
-        src = ws / "10-research" / "sources" / "spec.pdf"
+        src = ws / "references" / "spec.pdf"
         src.write_bytes(b"x")
         blocked = run_hook(ws, "protect_paths.py", {"tool_name": "Edit", "tool_input": {"file_path": str(src)}})
         self.assertEqual(blocked.returncode, 2)
@@ -148,23 +150,26 @@ class TestHooks(Base):
                        {"tool_name": "Write", "tool_input": {"file_path": str(src.with_name("new.pdf"))}})
         self.assertEqual(new.returncode, 0)
         note = run_hook(ws, "protect_paths.py",
-                        {"tool_name": "Edit", "tool_input": {"file_path": str(ws / "10-research" / "notes" / "a.md")}})
+                        {"tool_name": "Edit", "tool_input": {"file_path": str(ws / "docs" / "notes" / "a.md")}})
         self.assertEqual(note.returncode, 0)
 
     def test_zone_guard(self):
         ws = self.new("h2", "--project")
         stray = run_hook(ws, "zone_guard.py",
-                         {"tool_name": "Write", "tool_input": {"file_path": str(ws / "10-research" / "notes" / "ADR-01-x.md")}})
+                         {"tool_name": "Write", "tool_input": {"file_path": str(ws / "docs" / "notes" / "DECISIONS.md")}})
         self.assertEqual(stray.returncode, 2)
-        (ws / "10-research" / "notes" / "plan.md").write_text("x")
+        (ws / "docs" / "notes" / "plan.md").write_text("x")
         copy = run_hook(ws, "zone_guard.py",
-                        {"tool_name": "Write", "tool_input": {"file_path": str(ws / "30-decisions" / "plan.md")}})
+                        {"tool_name": "Write", "tool_input": {"file_path": str(ws / "docs" / "plans" / "plan.md")}})
         self.assertEqual(copy.returncode, 2)
         ok = run_hook(ws, "zone_guard.py",
-                      {"tool_name": "Write", "tool_input": {"file_path": str(ws / "30-decisions" / "ADR-01-x.md")}})
+                      {"tool_name": "Write", "tool_input": {"file_path": str(ws / "docs" / "decisions" / "adr" / "0001-x.md")}})
         self.assertEqual(ok.returncode, 0)
+        snapshot = run_hook(ws, "zone_guard.py",
+                            {"tool_name": "Write", "tool_input": {"file_path": str(ws / "releases" / "v1.0.0" / "plan.md")}})
+        self.assertEqual(snapshot.returncode, 0)
         nb = run_hook(ws, "zone_guard.py",
-                      {"tool_name": "NotebookEdit", "tool_input": {"notebook_path": str(ws / "src" / "DECISIONS.ipynb")}})
+                      {"tool_name": "NotebookEdit", "tool_input": {"notebook_path": str(ws / "src" / "CONSTRAINTS.md")}})
         self.assertEqual(nb.returncode, 2)
 
     def test_checkpoint_gate_and_checkpoint(self):
@@ -222,11 +227,11 @@ class TestGitPolicy(Base):
 
     def test_sources_logged_and_write_once(self):
         ws = self.new("g3")
-        src = ws / "10-research" / "sources" / "spec.pdf"
+        src = ws / "references" / "spec.pdf"
         write(src, "v1")
         self.assertRefused(commit(ws, "docs: add spec"), "R-SOURCES")
-        log = ws / "10-research" / "SOURCES_LOG.md"
-        write(log, log.read_text(encoding="utf-8") + "\n2026-10-12 — https://x — 10-research/sources/spec.pdf — spec\n")
+        log = ws / "references" / "SOURCES_LOG.md"
+        write(log, log.read_text(encoding="utf-8") + "\n2026-10-12 — https://x — references/spec.pdf — spec\n")
         self.assertCommitted(commit(ws, "docs: add spec"))
         write(src, "v2")
         self.assertRefused(commit(ws, "docs: tweak spec"), "R-SOURCES")
@@ -239,16 +244,16 @@ class TestGitPolicy(Base):
 
     def test_naming(self):
         ws = self.new("g4")
-        write(ws / "10-research" / "notes" / "Random Notes.md", "x")
+        write(ws / "docs" / "notes" / "Random Notes.md", "x")
         self.assertRefused(commit(ws, "docs: notes"), "R-PLACE")
         subprocess.run(["git", "reset", "-q"], cwd=ws)
-        (ws / "10-research" / "notes" / "Random Notes.md").unlink()
-        write(ws / "10-research" / "notes" / "2026-10-12-vendor-options.md", "x")
+        (ws / "docs" / "notes" / "Random Notes.md").unlink()
+        write(ws / "docs" / "notes" / "2026-10-12-vendor-options.md", "x")
         self.assertCommitted(commit(ws, "docs: notes"))
 
     def test_decision_register(self):
         ws = self.new("g5")
-        dec = ws / "30-decisions" / "DECISIONS.md"
+        dec = ws / "docs" / "decisions" / "DECISIONS.md"
         base = dec.read_text(encoding="utf-8")
         d1 = "| D1 | 2026-10-12 | Use Postgres | SQLite — no concurrent writers | — | |"
         write(dec, base.replace("| D1 | | | | — | |", "| D1 | 2026-10-12 | Use Postgres | | — | |"))
@@ -264,7 +269,7 @@ class TestGitPolicy(Base):
 
     def test_open_item_needs_owner_and_trigger(self):
         ws = self.new("g6")
-        oi = ws / "30-decisions" / "OPEN-ITEMS.md"
+        oi = ws / "docs" / "decisions" / "OPEN-ITEMS.md"
         base = oi.read_text(encoding="utf-8")
         write(oi, base.replace("| O1 | | | | |", "| O1 | Which vendor? | KH | | |"))
         self.assertRefused(commit(ws, "docs: open item", "why"), "R-DECISIONS")
@@ -273,18 +278,22 @@ class TestGitPolicy(Base):
 
     def test_adr_format_and_zones(self):
         ws = self.new("g7", "--project")
-        write(ws / "30-decisions" / "ADR-01-storage.md", "# ADR-01\n\n## Decision\n\nPostgres.\n")
+        adr = ws / "docs" / "decisions" / "adr"
+        write(adr / "0001-storage.md", "# 0001\n\n## Decision\n\nPostgres.\n")
         self.assertRefused(commit(ws, "docs: adr", "why"), "R-ADR")
-        template = (ws / "30-decisions" / "ADR-TEMPLATE.md").read_text(encoding="utf-8")
-        write(ws / "30-decisions" / "ADR-01-storage.md", template)
+        write(adr / "0001-storage.md", (adr / "TEMPLATE.md").read_text(encoding="utf-8"))
         self.assertCommitted(commit(ws, "docs: adr", "Storage needs an argued decision."))
+        write(adr / "ADR-2-cache.md", "x")
+        self.assertRefused(commit(ws, "docs: adr", "why"), "R-PLACE")
+        subprocess.run(["git", "reset", "-q"], cwd=ws)
+        (adr / "ADR-2-cache.md").unlink()
 
-        write(ws / "10-research" / "notes" / "2026-10-12-draft.md", "x")
+        write(ws / "docs" / "notes" / "2026-10-12-draft.md", "x")
         self.assertCommitted(commit(ws, "docs: draft"))
-        write(ws / "40-lab" / "protocols" / "2026-10-12-draft.md", "x")
+        write(ws / "reports" / "2026-10-12-draft.md", "x")
         self.assertRefused(commit(ws, "docs: copy draft"), "R-ZONES")
         subprocess.run(["git", "reset", "-q"], cwd=ws)
-        (ws / "40-lab" / "protocols" / "2026-10-12-draft.md").unlink()
+        (ws / "reports" / "2026-10-12-draft.md").unlink()
         write(ws / "src" / "DECISIONS.md", "x")
         self.assertRefused(commit(ws, "docs: stray"), "R-ZONES")
 
@@ -384,84 +393,178 @@ class TestClaudeErgonomics(Base):
 
     def test_bash_guard(self):
         ws = self.new("s3", "--project")
-        src = ws / "10-research" / "sources" / "spec.pdf"
-        src.write_bytes(b"x")
+        write(ws / "references" / "spec.pdf", "x")
+        write(ws / "experiments" / "2026-10-12-x" / "results" / "2026-10-12" / "out.txt", "1")
         cases = {
-            "rm 10-research/sources/spec.pdf": 2,
-            "Remove-Item 10-research\\sources\\spec.pdf": 2,
-            "sed -i s/a/b/ 10-research/sources/spec.pdf": 2,
-            "echo x >> 10-research/sources/spec.pdf": 2,
-            "git mv 10-research/sources/spec.pdf 10-research/notes/": 2,
-            "rm -rf 40-lab/results": 2,
-            "cat 10-research/sources/spec.pdf > 10-research/notes/2026-10-12-spec.md": 0,
-            "curl -o 10-research/sources/new.pdf https://example.com/a.pdf": 0,
-            "echo x > 10-research/sources/new.txt": 0,
+            "rm references/spec.pdf": 2,
+            "Remove-Item references\\spec.pdf": 2,
+            "sed -i s/a/b/ references/spec.pdf": 2,
+            "echo x >> references/spec.pdf": 2,
+            "git mv references/spec.pdf docs/notes/": 2,
+            "rm -rf experiments/2026-10-12-x/results": 2,
+            "cat references/spec.pdf > docs/notes/2026-10-12-spec.md": 0,
+            "echo x >> references/SOURCES_LOG.md": 0,
+            "curl -o references/inbox/new.pdf https://example.com/a.pdf": 0,
+            "curl -o references/new.pdf https://example.com/a.pdf": 2,     # project tier: via the inbox
+            "cp ~/Downloads/a.pdf references/a.pdf": 2,
             'git commit --no-verify -m "feat: x"': 2,
             'git commit -nm "feat: x"': 2,
             "git push -n origin main": 0,
             "git config core.hooksPath /dev/null": 2,
-            "git status && ls 10-research/sources": 0,
+            "git status && ls references": 0,
         }
         for command, expected in cases.items():
             r = run_hook(ws, "bash_guard.py", {"tool_name": "Bash", "tool_input": {"command": command}})
             self.assertEqual(r.returncode, expected, f"{command}: {r.stderr}")
 
+    def test_task_tier_saves_sources_directly(self):
+        ws = self.new("s3b")
+        r = run_hook(ws, "bash_guard.py", {"tool_name": "Bash",
+                                           "tool_input": {"command": "curl -o references/new.pdf https://x/a.pdf"}})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = run_hook(ws, "protect_paths.py", {"tool_name": "Write",
+                                              "tool_input": {"file_path": str(ws / "references" / "new.md")}})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_task_helpers_produce_what_the_checks_accept(self):
         ws = self.new("s4")
         self.assertEqual(helper(ws, "note", "Vendor options!").returncode, 0)
-        self.assertTrue((ws / "10-research" / "notes").glob("*-vendor-options.md"))
+        self.assertEqual(len(list((ws / "docs" / "notes").glob("*-vendor-options.md"))), 1)
         local = self.tmp / "spec-v2.pdf"
         local.write_bytes(b"pdf")
         r = helper(ws, "source", "add", "https://example.com/spec-v2.pdf", "--desc", "Spec v2", "--file", str(local))
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((ws / "references" / "spec-v2.pdf").exists())
         self.assertNotEqual(helper(ws, "source", "add", "https://x", "--desc", "d", "--file", str(local)).returncode, 0)
         self.assertEqual(helper(ws, "decide", "Use Postgres", "--alt", "SQLite -- no concurrent writers").returncode, 0)
         self.assertEqual(helper(ws, "decide", "Use MySQL", "--alt", "Postgres -- licence",
                                 "--supersedes", "D1").returncode, 0)
-        decisions = (ws / "30-decisions" / "DECISIONS.md").read_text(encoding="utf-8")
-        self.assertIn("| D1 |", decisions)
+        decisions = (ws / "docs" / "decisions" / "DECISIONS.md").read_text(encoding="utf-8")
         self.assertIn("| D2 |", decisions)
         self.assertEqual(len(re.findall(r"^\| D1 \|", decisions, re.M)), 1)
         self.assertEqual(helper(ws, "open-item", "Which vendor?", "--owner", "KH", "--trigger", "pilot").returncode, 0)
         self.assertEqual(helper(ws, "open-item", "Budget?", "--owner", "KH", "--trigger", "Q4").returncode, 0)
         self.assertEqual(helper(ws, "close-item", "O1", "Vendor A").returncode, 0)
-        items = (ws / "30-decisions" / "OPEN-ITEMS.md").read_text(encoding="utf-8")
+        items = (ws / "docs" / "decisions" / "OPEN-ITEMS.md").read_text(encoding="utf-8")
         self.assertIn("| O1 | Which vendor? | Vendor A |", items.split("## Closed")[1])
         self.assertNotIn("Which vendor?", items.split("## Closed")[0])
-        self.assertEqual(commit(ws, "docs: helpers", "Exercise every task helper.").returncode, 0)
+        r = commit(ws, "docs: helpers", "Exercise every task helper.")
+        self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotEqual(helper(ws, "adr", "new", "x").returncode, 0)  # project tier only
 
     def test_project_helpers_produce_what_the_checks_accept(self):
         ws = self.new("s5", "--project")
-        for args in (("adr", "new", "Storage backend"), ("exp", "new", "Cache warmup"), ("run", "new", "smoke"),
-                     ("run", "new"), ("prompt", "new", "Restructure plan")):
+        for args in (("plan", "new", "Pilot rollout"), ("adr", "new", "Storage backend"),
+                     ("exp", "new", "Cache warmup")):
             self.assertEqual(helper(ws, *args).returncode, 0, args)
-        self.assertTrue((ws / "30-decisions" / "ADR-01-storage-backend.md").exists())
-        runs = sorted(p.name for p in (ws / "40-lab" / "results").iterdir() if p.is_dir())
+        self.assertTrue((ws / "docs" / "plans" / "pilot-rollout.md").exists())
+        self.assertTrue((ws / "docs" / "decisions" / "adr" / "0001-storage-backend.md").exists())
+        exp = next(p for p in (ws / "experiments").iterdir() if p.is_dir())
+        self.assertRegex(exp.name, r"^\d{4}-\d{2}-\d{2}-cache-warmup$")
+        self.assertNotEqual(helper(ws, "run", "new", "no-such-experiment").returncode, 0)
+        for _ in range(2):
+            self.assertEqual(helper(ws, "run", "new", exp.name).returncode, 0)
+        runs = sorted(p.name for p in (exp / "results").iterdir())
         self.assertEqual(len(runs), 2)
         self.assertTrue(runs[1].endswith("-02"))
         r = commit(ws, "docs: scaffold work", "Exercise every project helper.")
         self.assertEqual(r.returncode, 0, r.stderr)
-        prompt = next((ws / "20-prompts" / "active").glob("*-restructure-plan.md"))
-        self.assertEqual(helper(ws, "prompt", "done", str(prompt.relative_to(ws))).returncode, 0)
-        self.assertEqual(commit(ws, "docs: prompt ran").returncode, 0)
-        self.assertEqual(helper(ws, "release", "cut", "v0.1.0", "--include", "30-decisions").returncode, 0)
-        manifest = (ws / "50-release" / "v0.1.0" / "MANIFEST.md").read_text(encoding="utf-8")
-        self.assertIn("ADR-01-storage-backend.md", manifest)
+        write(exp / "results" / runs[0] / "README.md", "edited")  # README is append-to, allowed
+        write(exp / "results" / runs[0] / "out.csv", "1")
+        self.assertEqual(commit(ws, "test(cache): record run").returncode, 0)
+        write(exp / "results" / runs[0] / "out.csv", "2")
+        self.assertIn("R-EVIDENCE", commit(ws, "test(cache): fix numbers").stderr)
+        subprocess.run(["git", "reset", "-q", "--hard"], cwd=ws)
+        self.assertEqual(helper(ws, "release", "cut", "v0.1.0", "--include", "docs/decisions").returncode, 0)
+        manifest = (ws / "releases" / "v0.1.0" / "MANIFEST.md").read_text(encoding="utf-8")
+        self.assertIn("0001-storage-backend.md", manifest)
         self.assertNotEqual(helper(ws, "release", "cut", "v0.2.0", "--include", "src").returncode, 0)  # dirty
-        r = commit(ws, "chore: release v0.1.0")
+        r = commit(ws, "chore: release v0.1.0", "Hand-over to the pilot team.")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_inbox_then_promotion(self):
+        ws = self.new("s5b", "--project")
+        local = self.tmp / "datasheet.pdf"
+        local.write_bytes(b"pdf")
+        r = helper(ws, "source", "add", "https://vendor.example/ds.pdf", "--desc", "Datasheet rev C", "--file", str(local))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        inbox = ws / "references" / "inbox" / "datasheet.pdf"
+        self.assertTrue(inbox.exists())
+        self.assertFalse((ws / "references" / "datasheet.pdf").exists())
+        self.assertEqual(commit(ws, "docs: stage datasheet").returncode, 0)  # the inbox needs no log line
+        self.assertIn("Inbox: 1", helper(ws, "status").stdout)
+        direct = run_hook(ws, "protect_paths.py", {"tool_name": "Write",
+                                                   "tool_input": {"file_path": str(ws / "references" / "x.pdf")}})
+        self.assertEqual(direct.returncode, 2)
+        self.assertIn("R-INBOX", direct.stderr)
+        r = helper(ws, "source", "promote", "references/inbox/datasheet.pdf")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((ws / "references" / "datasheet.pdf").exists())
+        self.assertFalse(inbox.exists())
+        log = (ws / "references" / "SOURCES_LOG.md").read_text(encoding="utf-8")
+        self.assertIn("https://vendor.example/ds.pdf — references/datasheet.pdf — Datasheet rev C", log)
+        r = commit(ws, "docs: promote datasheet")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        settings = json.loads((ws / ".claude" / "settings.json").read_text())
+        self.assertIn("Bash(python .ai/wr.py source promote *)", settings["permissions"]["ask"])
 
     def test_every_skill_is_well_formed_and_calls_real_helpers(self):
         ws = self.new("s6", "--project")
         skills = sorted((ws / ".claude" / "skills").glob("*/SKILL.md"))
-        self.assertEqual(len(skills), 9)
+        self.assertEqual(len(skills), 10)
         for skill in skills:
             text = skill.read_text(encoding="utf-8")
             self.assertTrue(text.startswith("---\nname: " + skill.parent.name + "\ndescription: "), skill)
-            for cmd in set(re.findall(r"python \.ai/wr\.py ([a-z-]+(?: new| add| cut| done)?)", text)):
+            for cmd in set(re.findall(r"python \.ai/wr\.py ([a-z-]+(?: new| add| cut| promote)?)", text)):
                 r = helper(ws, *cmd.split(), "--help")
                 self.assertEqual(r.returncode, 0, f"{skill.parent.name}: {cmd}")
+
+
+ROBOT = "\U0001F916 [AI]"
+
+
+class TestAiMarking(Base):
+    """Only a subagent's own work is marked; work done at the user's prompt is not."""
+
+    def test_checkpoint_marks_subject_and_trailer(self):
+        ws = self.new("m1", "--quick")
+        write(ws / "a.txt", "x")
+        r = subprocess.run([sys.executable, ".ai/checkpoint.py", "--agent", "researcher", "docs: add notes", "why"],
+                           cwd=ws, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        msg = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=ws, capture_output=True,
+                             text=True, encoding="utf-8").stdout
+        self.assertTrue(msg.startswith(f"docs: {ROBOT} add notes"), msg)
+        self.assertIn("AI-Agent: researcher", msg)
+
+    def test_tag_and_trailer_must_go_together(self):
+        ws = self.new("m2", "--quick")
+        write(ws / "a.txt", "x")
+        self.assertIn("R-COMMIT", commit(ws, f"docs: {ROBOT} sneaky").stderr)
+        self.assertIn("R-COMMIT", commit(ws, "docs: plain", "AI-Agent: researcher").stderr)
+        self.assertEqual(commit(ws, f"docs: {ROBOT} marked", "Why.", "AI-Agent: researcher").returncode, 0)
+
+    def test_bash_hook_marks_subagent_commits_only(self):
+        ws = self.new("m3", "--quick")
+        cmd = 'python .ai/checkpoint.py "docs: add notes" "why"'
+        sub = run_hook(ws, "bash_guard.py", {"tool_name": "Bash", "agent_id": "a1", "agent_type": "researcher",
+                                             "tool_input": {"command": cmd, "description": "commit"}})
+        self.assertEqual(sub.returncode, 0, sub.stderr)
+        out = json.loads(sub.stdout)["hookSpecificOutput"]
+        self.assertEqual(out["updatedInput"]["command"],
+                         'python .ai/checkpoint.py --agent researcher "docs: add notes" "why"')
+        self.assertEqual(out["updatedInput"]["description"], "commit")
+        main = run_hook(ws, "bash_guard.py", {"tool_name": "Bash", "tool_input": {"command": cmd}})
+        self.assertEqual((main.returncode, main.stdout), (0, ""))
+        forged = run_hook(ws, "bash_guard.py", {"tool_name": "Bash", "tool_input": {
+            "command": 'python .ai/checkpoint.py --agent researcher "docs: x"'}})
+        self.assertEqual(forged.returncode, 2)
+        raw = run_hook(ws, "bash_guard.py", {"tool_name": "Bash", "agent_id": "a1", "agent_type": "researcher",
+                                             "tool_input": {"command": 'git commit -m "docs: x"'}})
+        self.assertEqual(raw.returncode, 2)
+        chained = run_hook(ws, "bash_guard.py", {"tool_name": "Bash", "agent_id": "a1", "agent_type": "researcher",
+                                                 "tool_input": {"command": cmd + " && rm -rf src"}})
+        self.assertEqual(chained.returncode, 2)
 
 
 REAL_BRAIN = Path(os.environ.get("AGENTBRAIN_PATH") or Path.home() / ".agentbrain")
@@ -472,9 +575,9 @@ tiers: {tiers}
 triggers:
   - "do {name}"
 writes_to:
-  - "10-research/notes/"
+  - "docs/notes/"
 never_touches:
-  - "10-research/sources/"
+  - "references/"
 ---
 
 Body of {name}.

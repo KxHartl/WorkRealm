@@ -16,7 +16,7 @@ Never bypass a check with `--no-verify`. If a check is wrong, say so and fix the
 > **R-LANG** · enforced by: git
 
 {{CHAT_LANG}} **Documents, code, comments and commit messages:** English. The pre-commit check
-warns (never blocks) when non-English text is added outside `10-research/sources/`; quoting a
+warns (never blocks) when non-English text is added outside `references/` and `data/raw/`; quoting a
 source verbatim is fine.
 
 ## Context first
@@ -37,6 +37,10 @@ Update it whenever the goal, the next step or a blocker changes, and before endi
   Do not wait for the end of the task, and do not wait to be asked.
 - Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:` …), checked on every commit.
   The body says **why**.
+- **AI marking is for work a subagent did on its own.** Its commits get the robot tag in the
+  subject and an `AI-Agent: <name>` trailer, added automatically in Claude Code. Work done at the
+  user's prompt, by the main agent, is committed unmarked. Never add or remove the mark by hand;
+  the two parts must appear together, and a commit with only one is refused.
 - The `post-commit` hook pushes every commit when a remote exists. A local-only commit is one
   disk failure from gone.
 - Before finishing a response, `git status --porcelain` must be empty. The Claude Stop hook

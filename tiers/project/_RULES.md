@@ -1,55 +1,55 @@
-## Zones — a document lives in exactly one
+## The project layout
 
 > **R-ZONES** · enforced by: git, claude
 
-The numbered folders are the workflow; sorting them alphabetically sorts them by stage of work.
+The task-tier folders, plus:
 
-| Zone | Holds | Enters when | Leaves when |
-|---|---|---|---|
-| `10-research/` | Anything unsettled: notes, sources, experiments | You start looking into something | It concludes → a decision or a prompt |
-| `20-prompts/` | Prompts being shaped (`active/`) and already run (`archive/`) | You are shaping how to attack a problem | Run → `archive/`; output lands elsewhere |
-| `30-decisions/` | Only what is settled | A decision is actually made | Never. ADRs change in place with a decision-log row; the `DECISIONS.md` register only grows |
-| `40-lab/` | Protocols and run results | There is something to test | Results feed `30-decisions/` |
-| `50-release/` | Versioned snapshots handed to someone | You hand something over | Never. Immutable once cut |
-| `90-archive/` | Superseded originals | A document is dissolved | Never |
+| Path | Holds | Rule |
+|---|---|---|
+| `docs/plans/` | Plans, roadmaps, phases with exit criteria | Free to edit; `python .ai/wr.py plan new` |
+| `docs/decisions/adr/` | One ADR per expensive-to-reverse decision: `NNNN-title.md` | See R-ADR |
+| `docs/decisions/CONSTRAINTS.md` | Confirmed inputs: budgets, deadlines, mandates, and what flips if one is wrong | Cite who confirmed it |
+| `references/inbox/` | Downloads waiting for review | See R-INBOX |
+| `data/raw/` · `data/processed/` | Input data as received · anything derived from it | `raw/` is write-once; `processed/` is reproducible |
+| `experiments/YYYY-MM-DD-topic/` | `README.md` (question, method, conclusion) and `results/` | One folder per experiment |
+| `experiments/*/results/YYYY-MM-DD[-NN]/` | One folder per run: commit, environment, raw output | Write-once; a re-run is a new folder |
+| `releases/vX.Y.Z/` | What was handed to someone, with `MANIFEST.md` and `SUMMARY.md` | Immutable |
+| `archive/` | Superseded originals, moved with `git mv` | Write-once |
 
-**Moving a document between zones is a deliberate, committed act** (`git mv`). Never keep the
-same content in two zones. Decision documents outside `30-decisions/` and copies across zones are
-refused; the Claude hook also notes every edit to `30-decisions/`. The one exception is
-`50-release/`: a release is a snapshot and holds copies on purpose.
-
-Where new work goes by default, and how it is named (checked when added). The helpers
-(`python .ai/wr.py note | exp new | prompt new | prompt done | run new | adr new | release cut`)
-create each of these with the right name:
-
-- A question you cannot answer yet → `10-research/notes/YYYY-MM-DD-topic.md`
-- Something to try → `10-research/experiments/EXP-<YYYYMMDD>-<topic>/`
-- A prompt about to be run → `20-prompts/active/YYYY-MM-DD-topic.md`, then `archive/`
-- A test result → `40-lab/results/RUN-<YYYYMMDD>[-NN]/`, **write-once**
-- A conclusion → a row in `DECISIONS.md`, and `30-decisions/ADR-<NN>-<topic>.md` if it needs the
-  full argument
-- A hand-over → `50-release/v<MAJOR>.<MINOR>.<PATCH>[-label]/`
+A decision document (`DECISIONS.md`, `OPEN-ITEMS.md`, `CONSTRAINTS.md`, an ADR) outside
+`docs/decisions/` is refused, and so is a copy of a file from one folder into another: move it
+with `git mv`. Releases are the one exception: a release is a snapshot and holds copies on purpose.
+Helpers create each of these with the right name: `plan new`, `adr new`, `exp new`,
+`run new <experiment>`, `release cut`.
 
 ## Read-only evidence
 
 > **R-EVIDENCE** · enforced by: git, claude
 
-`10-research/sources/`, `40-lab/results/`, `50-release/` and `90-archive/` are write-once:
-new files yes, edits and deletions no. A re-run is a new `RUN-<date>/` folder; a correction to a
-release is a new version.
+`references/` (apart from the inbox), `data/raw/`, every `experiments/*/results/`, `releases/` and
+`archive/` are write-once: new files yes, edits and deletions no. Results record numbers, not
+verdicts; a correction to a release is a new version.
+
+## Evidence goes through the inbox
+
+> **R-INBOX** · enforced by: claude
+
+Agents never add to `references/` directly at this tier. New material goes to
+`references/inbox/` (`python .ai/wr.py source add <URL> --desc "..."`). The owner decides what
+becomes evidence: `python .ai/wr.py source promote <file>` moves it in and logs it, and Claude Code
+asks the user before running it. Delete what is not worth keeping.
 
 ## Decisions are argued, not asserted
 
 > **R-ADR** · enforced by: git
 
-A decision that is expensive to reverse gets an ADR in `30-decisions/` (copy `ADR-TEMPLATE.md`):
-the recommendation, the two strongest alternatives, why they lost, what would change my mind,
-and the cost of reversal — an ADR missing one of those sections is refused. `DECISIONS.md` gets a
-row pointing at it. Changing an ADR means editing it in place **and** adding a row to its decision
-log with the old position and the reason (a change without one draws a warning). That row and the
-commit body are the record of why a decision moved.
+A decision that is expensive to reverse gets an ADR (`python .ai/wr.py adr new "<title>"`): the
+recommendation, the two strongest alternatives and why they lost, what would change my mind, and
+the cost of reversal. An ADR missing a section is refused. `DECISIONS.md` gets a row pointing at it.
+Changing an ADR means editing it in place **and** adding a row to its decision log with the old
+position and the reason (a change without one draws a warning).
 
-Read `STATE.md`, `30-decisions/DECISIONS.md` and `CONSTRAINTS.md` before proposing anything.
+Read `STATE.md`, `DECISIONS.md` and `CONSTRAINTS.md` before proposing anything.
 
 ## Backups
 

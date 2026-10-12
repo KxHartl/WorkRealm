@@ -5,7 +5,7 @@ description: Prepare the workspace for the next session - update STATE.md with w
 
 1. Run `python .ai/wr.py handoff` and read the status it prints.
 2. Update `STATE.md`: what was done this session, the **next concrete step**, and anything
-   blocking or waiting on the owner. Keep it short; detail belongs in notes or decisions.
+   blocking or waiting on the owner. Keep it short; detail belongs in notes, plans or decisions.
 3. If a question must be answered by someone, record it (task tier and up):
    `python .ai/wr.py open-item "<question>" --owner <who> --trigger "<by when>"`.
 4. Commit: `python .ai/checkpoint.py "docs: update STATE for handoff" "<one line on where things stand>"`.
