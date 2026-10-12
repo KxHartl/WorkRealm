@@ -1,11 +1,9 @@
 # WorkRealm
 
-> A workspace generator for AI-agent work — tasks and projects, not seminars and theses.
-> The work-oriented sibling of [LiteRealm](https://github.com/KxHartl/LiteRealm).
+> A workspace generator for work done with AI agents: tasks, analyses, features, evaluations,
+> long projects. One command, a Git-backed folder, rules that actually bind.
 
 Repository: <https://github.com/KxHartl/WorkRealm> (private)
-
-One command creates a Git-backed folder with rules, memory and guard-rails sized to the job:
 
 ```powershell
 python wr.py new MyTask              # task tier — the default, no flag
@@ -15,30 +13,87 @@ python wr.py new BigThing --project  # project tier
 
 Workspaces are created next to this folder (`C:\Projects\<name>`) unless `--dir` says otherwise.
 
-## The three tiers
+## What it is for
 
-Each tier is a **strict extension** of the one below, so `wr upgrade` only ever *adds* files.
+AI agents are good at doing work and bad at keeping a workspace honest over weeks: they forget
+the plan, edit the evidence, re-decide settled questions, name files at random and leave work
+uncommitted. WorkRealm makes the right behaviour the default:
+
+- **One memory that survives sessions.** `STATE.md` is loaded into every session automatically.
+- **Rules that bind every tool, not prose that hopes.** Git hooks run the same checks whether the
+  commit comes from Claude Code, Gemini, Codex, Cursor or a person.
+- **Evidence stays evidence.** Sources, raw data, run results and releases are write-once.
+- **Decisions carry their reason.** Every decision names the alternative that lost and why; a
+  settled decision is superseded, never silently edited.
+- **The right way is one command.** Helpers and skills create correctly named, complete files, so
+  following the rules is easier than not.
+- **Specialists are shared.** Agents and skills come from one place (AgentBrain), sized to the tier.
+
+## Layout
+
+Familiar names, one home for each kind of thing. Each tier adds folders and never renames one,
+so `wr upgrade` is a pure addition.
+
+```
+README.md  STATE.md  AGENTS.md (+ CLAUDE.md, GEMINI.md)   workspace-wide, every tier
+docs/
+  notes/          findings, comparisons, drafts: YYYY-MM-DD-topic.md         task
+  decisions/      DECISIONS.md, OPEN-ITEMS.md                                task
+                  CONSTRAINTS.md, adr/NNNN-title.md                          project
+  plans/          plans, phases, exit criteria                               project
+references/       evidence: write-once, logged in SOURCES_LOG.md             task
+  inbox/          downloads awaiting the owner's review                      project
+src/  tests/      code and its tests                                         task
+reports/          deliverables being written                                 task
+data/raw/         input data as received, write-once                         project
+data/processed/   derived from raw/, reproducible                            project
+experiments/YYYY-MM-DD-topic/                                                project
+  README.md       question, method, conclusion
+  results/YYYY-MM-DD[-NN]/   one folder per run, write-once
+releases/vX.Y.Z/  immutable hand-overs with MANIFEST.md and SUMMARY.md       project
+archive/          superseded originals                                       project
+```
+
+The layout is data in `.workrealm.json` (`layout`, `protected`, `zones`, `naming`), and the checks
+read it from there.
+
+## The three tiers
 
 | | **quick** | **task** (default) | **project** |
 |---|---|---|---|
-| For | Hours to a day: a fix, a script, a one-off analysis | Days to weeks: a feature, an evaluation, a report | Weeks to months: architecture, regulated or multi-phase work |
-| `AGENTS.md` + `CLAUDE.md` + `GEMINI.md` | ✓ | ✓ | ✓ |
-| `STATE.md` | Goal · done · next | + focus, waiting-on | + phases, blockers, owner decisions |
-| Commit discipline (Stop hook, `checkpoint.py`, auto-push) | ✓ | ✓ | ✓ |
-| Git checks, any tool (`.githooks/` → `.ai/policy.py`) | secrets, Conventional Commits, English (warn) | + write-once sources, sources logged, naming, decision register, why-body on decisions | + zone placement, no cross-zone copies, ADR sections |
-| `10-research/` notes + read-only sources + log | | ✓ | ✓ + experiments |
-| `30-decisions/` `DECISIONS.md` + `OPEN-ITEMS.md` | | ✓ | ✓ + ADRs, `CONSTRAINTS.md` |
-| `src/` | | ✓ | ✓ |
-| `20-prompts/`, `40-lab/`, `50-release/`, `90-archive/` | | | ✓ |
-| Claude Code hooks | `session_start`, `checkpoint_gate`, `bash_guard` | + `protect_paths` | + `zone_guard` |
-| Helpers (`python .ai/wr.py …`) and skills | `status`, `checkpoint`, `handoff` | + `note`, `source add`, `decide`, `open-item` | + `adr new`, `exp new`, `run new`, `prompt`, `release cut` |
-| Status line, permissions (secrets unreadable, guard-rail edits ask) | ✓ | ✓ | ✓ |
-| AgentBrain agents (`wr sync`) | — | `researcher`, `reviewer` | + `decision_keeper`, `lab_runner`, `releaser` |
+| For | Hours to a day: a fix, a script, a one-off | Days to weeks: a feature, an evaluation, a report | Weeks to months: multi-phase, regulated or high-stakes work |
+| Rules (`AGENTS.md`) | language, STATE first, commits, secrets, verify-don't-recall, scope | + where things go, sources, decisions, branches, specialists, lessons | + project layout, write-once evidence, inbox, ADRs, backups |
+| Git checks, any tool | secrets, Conventional Commits, AI marking, English (warn) | + write-once paths, sources logged, naming, decision register, why-body | + one home per document, ADR sections |
+| Claude Code hooks | `session_start`, `checkpoint_gate`, `bash_guard` | + `protect_paths` | + `zone_guard`, inbox gate |
+| Helpers and skills | `status`, `checkpoint`, `handoff` | + `note`, `source add`, `decide`, `open-item` | + `source promote`, `plan new`, `adr new`, `exp new`, `run new`, `release cut` |
+| AgentBrain agents | — | `researcher`, `reviewer` | + `decision_keeper`, `lab_runner`, `releaser` |
 | AgentBrain skills | — | `diagnose`, `tdd` | + `improve-codebase-architecture`, `grill-with-docs` |
 | Private GitHub repo by default | no | yes | yes |
 
-The zones are KEV-Ai-Architecture's, distilled: what worked there is the project tier, and the
-smaller tiers are what remains when you take away what a short job does not need.
+Every tier also gets the status line, the permission entries (secrets unreadable, force-push
+denied, guard-rail edits ask first) and auto-push on every commit.
+
+## How rules bind
+
+Each rule in `AGENTS.md` has an ID and says what enforces it:
+
+| Tag | Meaning |
+|---|---|
+| `enforced by: git` | `.githooks/` runs `.ai/policy.py` on every commit and refuses a violation, from any tool |
+| `enforced by: claude` | a Claude Code hook acts as it happens: blocks the write or command, or loads context |
+| `advisory` | only the text holds it |
+
+A test in this repo fails if a rule claims a layer that does not exist at its tier, or if a rule
+has no tag. Refusals quote the rule ID and say how to fix the problem.
+
+**AI marking.** A commit is marked as AI work only when a subagent did that work on its own. The
+subject gets the robot tag and the message gets an `AI-Agent: <name>` trailer. The Claude Code hook
+adds both automatically, from the `agent_id` that Claude Code passes to hooks run inside a
+subagent. Work the main agent does at your prompt is committed unmarked, and the main agent cannot
+add the mark. The git check refuses a commit that has only one of the two.
+
+**Sources at the project tier** go into `references/inbox/`. Promoting one into evidence
+(`python .ai/wr.py source promote <file>`) is your decision, and Claude Code asks before running it.
 
 ## Commands
 
@@ -48,60 +103,37 @@ wr upgrade --to task|project [--path WORKSPACE]
 wr sync [--check] [--path WORKSPACE]
 ```
 
-- `--lang` writes the chat-language rule. `match` (default): reply in the user's language.
-  Documents, code and commits are always English.
+- `--lang` sets the chat-language rule. `match` (the default) means reply in the language the
+  user writes in. Documents, code and commits are always English.
 - `upgrade` adds the missing files, rewrites the generated block of `AGENTS.md` (your
-  *Project-specific rules* section is kept), the `hooks` key of `.claude/settings.json`, and the
-  tool-owned files in `.ai/` and `.githooks/`, so the workspace runs the current checks.
-  Your files, such as `STATE.md` and `README.md`, are never overwritten.
+  *Project-specific rules* section is kept), the `hooks` key of `.claude/settings.json` and the
+  tool-owned files in `.ai/`, `.githooks/` and `.claude/skills/`. Your own files are never overwritten.
 - `sync` re-syncs the work agents and skills from AgentBrain (`~/.agentbrain`, or
-  `AGENTBRAIN_PATH`) for the workspace's tier, prunes ones whose source is gone, and records the
-  brain version and commit. `--check` reports drift and writes nothing. `new` and `upgrade` sync
-  automatically; without a brain they warn and carry on.
-
-## What every workspace gets
-
-- **`AGENTS.md`**: rules assembled from `tiers/*/_RULES.md`, between markers, plus a
-  section that is yours. `CLAUDE.md` and `GEMINI.md` import it; Codex and Cursor read it directly.
-- **Every rule says what enforces it.** Each rule carries an ID (`R-COMMIT`, `R-SOURCES`, …) and
-  a tag: `enforced by: git`, `git, claude`, or `advisory`. A test in this repo fails if a rule
-  claims a layer that does not exist at its tier, or if a rule has no tag.
-- **Checks that bind every tool.** `.ai/policy.py` holds every machine-checked rule once. The git
-  hooks in `.githooks/` (wired up with `core.hooksPath`) run it on every commit, whether it comes
-  from Claude Code, Gemini, Codex, Cursor or a person. Refusals quote the rule ID and say how to fix it.
-- **Claude Code hooks on top.** Every session starts with `STATE.md` and the workspace status
-  already in context. The Stop hook will not let an agent finish with uncommitted work.
-  `protect_paths`, `zone_guard` and `bash_guard` stop a bad write or shell command before it
-  happens, using the same `policy.py`.
-- **The right way is the easy way.** `python .ai/wr.py` helpers (and the Claude skills that wrap
-  them) create correctly named notes, logged sources, complete decision rows, ADRs, runs and
-  releases, so following the rules takes one command.
-- **A `post-commit` hook that pushes every commit.** This is the lesson of the September 2026 disk
-  loss: a commit that exists only locally is one disk failure from gone.
+  `AGENTBRAIN_PATH`) for the workspace's tier, prunes the ones whose source is gone, and records
+  the brain version and commit. `--check` reports drift and writes nothing. `new` and `upgrade`
+  sync automatically; without a brain they warn and carry on.
 
 **After cloning a workspace**, run `git config core.hooksPath .githooks` once. The hooks are
-versioned, but git does not turn on a hooks path by itself. `wr doctor` will check this.
+versioned, but Git does not turn on a hooks path by itself.
 
 ## Layout of this repo
 
 ```
-wr.py            the generator (stdlib only, Python ≥ 3.10)
+wr.py            the generator (stdlib only, Python >= 3.10)
 wr.ps1, wr       launchers
 tiers/quick/     base files + _RULES.md
 tiers/task/      overlay on quick
 tiers/project/   overlay on task
-tests/           end-to-end: scaffold every tier, exercise every hook
+tests/           end-to-end: scaffold every tier, exercise every check, hook, helper and sync
+docs/DESIGN.md   the design and the roadmap
 ```
 
 Run the tests: `python -m unittest discover tests`
 
 ## Roadmap
 
-The agreed plan is in [`docs/PLAN.md`](docs/PLAN.md). Releases, in order:
+See [`docs/DESIGN.md`](docs/DESIGN.md). Next up:
 
-- **0.2.0, enforcement core** (done): `policy.py`, versioned git hooks, rule IDs, `GEMINI.md`.
-- **0.3.0, Claude ergonomics** (done): SessionStart hook, a Bash write guard, permissions,
-  a status line, `.ai/wr.py` helpers (`decide`, `source add`, `adr new` …) and skills that wrap them.
-- **0.4.0, AgentBrain** (done): work agents in `~/.agentbrain/agents/work/`, synced per tier and pinned.
-- **0.5.0, maintenance**: `wr doctor`, `wr adopt`.
-- **0.6.0, integrations**: `--with github,jira,m365,rag`, `--ticket`, CI.
+- **0.6.0**: `wr doctor [--fix]` (self-repair: hooks path, remote, drift, brain pin) and `wr adopt`
+  (bring any existing folder in without moving files).
+- **0.7.0**: integrations (`--with github,jira,m365,rag`, `--ticket`, CI that runs the checks on GitHub).

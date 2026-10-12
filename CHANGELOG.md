@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.0 — 2026-10-12
+
+A universal design: a familiar layout, held as data, and the owner's decisions kept with the
+owner. Workspaces from 0.4.0 keep their old folders: `wr upgrade` adds and never moves, and
+`wr adopt` (0.6.0) will map an existing layout. Needs AgentBrain 2.5.0.
+
+- **New layout:**
+  - `docs/notes/`, `docs/decisions/` (+ `CONSTRAINTS.md`, `adr/NNNN-title.md`), `docs/plans/`;
+  - `references/` (+ `inbox/`), `src/`, `tests/`, `reports/`, `data/raw|processed/`;
+  - `experiments/<date-topic>/results/<run>/`, `releases/`, `archive/`.
+
+  Every folder has a README with its one rule. It replaces the numbered zones.
+- **Layout as data.** `.workrealm.json` gains `layout`, `zones` and `snapshots`. Write-once
+  `protected` entries take globs (`experiments/*/results`) and `!` exceptions. `policy.py` and the
+  helpers read all their paths from it.
+- **Project-tier inbox (R-INBOX):**
+  - agents stage sources in `references/inbox/`;
+  - `python .ai/wr.py source promote` moves a file into evidence and logs it, and Claude Code asks
+    the user first;
+  - direct writes into `references/` are refused at this tier.
+- **AI marking for subagent work only.** The bash hook detects a subagent from `agent_id` and
+  rewrites its `checkpoint.py` call to add `--agent <name>`. The commit gets the robot tag and an
+  `AI-Agent:` trailer.
+  - The main agent cannot add the mark.
+  - A subagent's raw `git commit` is refused.
+  - The commit-msg check refuses a tag without its trailer, or a trailer without its tag.
+- **Helpers:** `plan new`; `run new <experiment>` (runs live inside their experiment); `release cut`
+  also writes `SUMMARY.md`. `prompt new|done` and the prompts zone are gone (prompts are notes or plans).
+- **Skills:** `/plan` added. All skills, rules and agents use the new paths.
+- **Write-once fixes:** a folder's `README.md` and the sources log are append-to documents, so
+  they no longer count as write-once evidence. `CONSTRAINTS.md` gains a "what flips if this is
+  wrong" column.
+
 ## 0.4.0 — 2026-10-12
 
 AgentBrain integration: specialists and shared skills sized to the tier. Needs AgentBrain 2.4.0.
