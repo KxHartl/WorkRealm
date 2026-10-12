@@ -49,8 +49,9 @@ ENFORCES = {
 DEFAULT_LAYOUT = {
     "notes": "docs/notes", "decisions": "docs/decisions", "adr": "docs/decisions/adr",
     "plans": "docs/plans", "sources": "references", "sources_log": "references/SOURCES_LOG.md",
-    "inbox": "references/inbox", "data_raw": "data/raw", "experiments": "experiments",
-    "reports": "reports", "releases": "releases", "archive": "archive",
+    "inbox": "references/inbox", "data_raw": "data/raw", "data_processed": "data/processed",
+    "experiments": "experiments", "reports": "reports", "releases": "releases", "archive": "archive",
+    "src": "src", "tests": "tests",
 }
 
 SECRETISH = re.compile(r"(^|/)(\.env(\..+)?|.*\.pem|.*\.key|id_rsa[^/]*|credentials\.json)$", re.I)
@@ -60,7 +61,8 @@ STRUCTURAL = {
     "STATE.md", "TEMPLATE.md", "__init__.py", "conftest.py", ".gitkeep", ".gitignore",
 }
 DECISION_DOC = re.compile(r"^(DECISIONS|OPEN-ITEMS|CONSTRAINTS)\.md$|^ADR-\d+", re.I)
-ADR_FILE = re.compile(r"^\d{4}-.+\.md$")
+# The registers can share a folder with ADRs (an adopted layout); they are not ADRs.
+REGISTERS = {"DECISIONS.md", "OPEN-ITEMS.md", "CONSTRAINTS.md"}
 ADR_SECTIONS = ("## Decision", "## Alternatives", "## What would change my mind",
                 "## Cost of reversal", "## Decision log")
 CONVENTIONAL = re.compile(
@@ -240,7 +242,8 @@ def check_naming(root, meta, changes):
             continue
         for rule in meta.get("naming", []):
             first = below(path, rule["under"])
-            if first is not None and first not in STRUCTURAL and not re.fullmatch(rule["pattern"], first):
+            if first is not None and first not in STRUCTURAL | REGISTERS \
+                    and not re.fullmatch(rule["pattern"], first):
                 yield block("R-PLACE", f"{path}: '{first}' does not follow the naming rule for "
                                        f"{rule['under']}/ (e.g. {rule['example']}). Rename it with `git mv`.")
 
@@ -292,13 +295,23 @@ def check_zone_placement(root, meta, changes):
                                    "move it with `git mv`, never copy.")
 
 
+def adr_missing(text: str) -> list[str]:
+    return [s for s in ADR_SECTIONS if not re.search(rf"^{re.escape(s)}\b", text, re.M)]
+
+
 def check_adr_format(root, meta, changes):
+    """Every ADR (a .md directly in the ADR folder) has all sections. An ADR that predates the
+    rule (adopted, never complete) may still be edited; it just may not lose sections."""
     adr_dir = layout(meta)["adr"]
     for status, path in changes:
-        if status == "D" or below(path, adr_dir) != name_of(path) or not ADR_FILE.match(name_of(path)):
+        name = name_of(path)
+        if status == "D" or below(path, adr_dir) != name or not name.endswith(".md") \
+                or name in STRUCTURAL or name in REGISTERS:
             continue
         text = staged_text(root, path)
-        missing = [s for s in ADR_SECTIONS if not re.search(rf"^{re.escape(s)}\b", text, re.M)]
+        missing = adr_missing(text)
+        if missing and status == "M" and adr_missing(head_text(root, path)):
+            continue  # legacy ADR: not complete before either
         if missing:
             yield block("R-ADR", f"{path} is missing: {', '.join(missing)}. Start from {adr_dir}/TEMPLATE.md "
                                  "(python .ai/wr.py adr new does).")
@@ -333,6 +346,20 @@ STAGED_CHECKS = {
     "adr_format": check_adr_format,
     "english": check_english,
 }
+
+
+def tree_findings(root: Path = ROOT) -> list[Finding]:
+    """Every tracked file checked as if it were new: the existing violations a workspace carries
+    (wr doctor reports them; they never block, because only changes are checked at commit)."""
+    meta = load_meta(root)
+    enabled = set(meta.get("checks", [])) - {"english", "protected_paths"}
+    tracked = [t for t in git(root, "ls-files", "-z").stdout.split("\0") if t]
+    changes = [("A", t) for t in tracked]
+    found = []
+    for name, check in STAGED_CHECKS.items():
+        if name in enabled:
+            found += list(check(root, meta, changes))
+    return found
 
 
 def staged_findings(root: Path = ROOT) -> list[Finding]:

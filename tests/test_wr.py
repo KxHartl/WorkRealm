@@ -656,5 +656,220 @@ class TestNoBrain(Base):
         self.assertNotEqual(run_wr("sync", "--path", str(self.tmp / "n1")).returncode, 0)
 
 
+def doctor(ws: Path, *flags: str) -> subprocess.CompletedProcess:
+    return run_wr("doctor", "--path", str(ws), *flags)
+
+
+def row(out: str, name: str) -> str:
+    """The doctor line for one check, e.g. 'FAIL  git hooks  ...'."""
+    return next((ln for ln in out.splitlines() if re.match(rf"^\w+\s+{re.escape(name)}\s", ln)), "")
+
+
+class TestDoctor(Base):
+    def test_fresh_workspace_is_healthy(self):
+        ws = self.new("d1")
+        r = doctor(ws)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        for name in ("version", "tool files", "settings", "rules", "git hooks", "work tree", "secrets", "policy"):
+            self.assertTrue(row(r.stdout, name).startswith("OK"), r.stdout)
+        self.assertTrue(row(r.stdout, "remote").startswith("WARN"))  # task tier without a remote
+
+    def test_missing_hooks_path_fails_and_fix_restores_it(self):
+        ws = self.new("d2")
+        git(ws, "config", "--unset", "core.hooksPath")
+        r = doctor(ws)
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(row(r.stdout, "git hooks").startswith("FAIL"), r.stdout)
+        self.assertEqual(doctor(ws, "--ci").returncode, 0)  # a CI checkout never has it; not checked there
+        fixed = doctor(ws, "--fix")
+        self.assertTrue(row(fixed.stdout, "git hooks").startswith("FIXED"), fixed.stdout)
+        self.assertEqual(git(ws, "config", "core.hooksPath").strip(), ".githooks")
+        self.assertEqual(doctor(ws).returncode, 0)
+
+    def test_tool_drift_settings_and_rules_are_repaired(self):
+        ws = self.new("d3", "--project")
+        original = (ws / ".ai" / "policy.py").read_text(encoding="utf-8")
+        (ws / ".ai" / "policy.py").write_text("# weakened", encoding="utf-8")
+        (ws / ".githooks" / "commit-msg").unlink()
+        settings = json.loads((ws / ".claude" / "settings.json").read_text())
+        del settings["hooks"]["Stop"]
+        settings["model"] = "opus"
+        (ws / ".claude" / "settings.json").write_text(json.dumps(settings))
+        agents = ws / "AGENTS.md"
+        agents.write_text(agents.read_text(encoding="utf-8").replace("## Context first", "## Context whenever")
+                          + "\n- my rule\n", encoding="utf-8")
+        r = doctor(ws)
+        for name in ("tool files", "settings", "rules"):
+            self.assertTrue(row(r.stdout, name).startswith("WARN"), r.stdout)
+        doctor(ws, "--fix")
+        self.assertEqual((ws / ".ai" / "policy.py").read_text(encoding="utf-8"), original)
+        self.assertTrue((ws / ".githooks" / "commit-msg").exists())
+        after = json.loads((ws / ".claude" / "settings.json").read_text())
+        self.assertIn("Stop", after["hooks"])
+        self.assertEqual(after["model"], "opus")
+        text = agents.read_text(encoding="utf-8")
+        self.assertIn("## Context first", text)
+        self.assertIn("- my rule", text)
+        self.assertEqual(doctor(ws, "--ci").returncode, 0)
+
+    def test_tracked_secrets_fail_and_are_not_auto_fixed(self):
+        ws = self.new("d4", "--quick")
+        write(ws / ".mcp.json", '{"mcpServers": {"jira": {"env": {"JIRA_API_TOKEN": "abcd1234efgh5678"}}}}')
+        subprocess.run(["git", "add", "-A"], cwd=ws)
+        subprocess.run(["git", "commit", "-q", "--no-verify", "-m", "chore: mcp"], cwd=ws)
+        r = doctor(ws, "--fix")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(".mcp.json", row(r.stdout, "secrets"))
+        self.assertIn("ROTATE", row(r.stdout, "secrets"))
+        write(ws / ".mcp.json", '{"mcpServers": {"jira": {"env": {"JIRA_API_TOKEN": "${JIRA_API_TOKEN}"}}}}')
+        subprocess.run(["git", "commit", "-qam", "fix: token from the environment"], cwd=ws)
+        self.assertTrue(row(doctor(ws).stdout, "secrets").startswith("OK"))
+
+    def test_upstream_missing_is_pushed_by_fix(self):
+        ws = self.new("d5")
+        remote = self.tmp / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        git(ws, "remote", "add", "origin", str(remote))
+        r = doctor(ws)
+        self.assertTrue(row(r.stdout, "remote").startswith("WARN"), r.stdout)
+        fixed = doctor(ws, "--fix")
+        self.assertTrue(row(fixed.stdout, "remote").startswith("FIXED"), fixed.stdout)
+        self.assertTrue(row(doctor(ws).stdout, "remote").startswith("OK"))
+
+    def test_existing_violations_are_reported_not_blocking(self):
+        ws = self.new("d6")
+        write(ws / "docs" / "notes" / "Random.md", "x")
+        subprocess.run(["git", "add", "-A"], cwd=ws)
+        subprocess.run(["git", "commit", "-q", "--no-verify", "-m", "docs: random"], cwd=ws)
+        r = doctor(ws)
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(row(r.stdout, "policy").startswith("WARN"))
+        self.assertIn("Random.md", r.stdout)
+
+
+def fixture_code_repo(root: Path) -> Path:
+    """A typical code repository with its own rules files and an ignored build folder."""
+    repo = root / "service"
+    write(repo / "README.md", "# Service\n")
+    write(repo / "src" / "app.py", "print('hi')\n")
+    write(repo / "tests" / "test_app.py", "def test_ok():\n    assert True\n")
+    write(repo / "AGENTS.md", "# Team rules\n\n- Format with black.\n")
+    write(repo / "CLAUDE.md", "Be terse.\n")
+    write(repo / ".gitignore", "dist/\n")
+    write(repo / "dist" / "bundle.js", "built")
+    for args in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "initial"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
+def fixture_research_folder(root: Path) -> Path:
+    """A folder with no Git, its own names, undated notes and old-style ADRs."""
+    folder = root / "study"
+    for name in ("ideas.md", "meeting.md", "todo.md"):
+        write(folder / "notes" / name, f"# {name}\n")
+    write(folder / "literature" / "paper.pdf", "pdf")
+    write(folder / "decisions" / "ADR-001-database.md", "# ADR-001\n\n## Decision\n\nPostgres.\n")
+    write(folder / "decisions" / "ADR-002-queue.md", "# ADR-002\n\n## Decision\n\nRabbitMQ.\n")
+    write(folder / "dist" / "v1" / "report.pdf", "r1")
+    write(folder / "old" / "stale.md", "old\n")
+    write(folder / "scratch" / "misc.txt", "misc\n")
+    return folder
+
+
+def snapshot(folder: Path) -> dict[str, bytes]:
+    return {p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*")
+            if p.is_file() and ".git" not in p.relative_to(folder).parts}
+
+
+class TestAdopt(Base):
+    def test_dry_run_writes_nothing(self):
+        repo = fixture_code_repo(self.tmp)
+        before = snapshot(repo)
+        r = run_wr("adopt", str(repo), "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Dry run", r.stdout)
+        self.assertEqual(snapshot(repo), before)
+        self.assertEqual(git(repo, "status", "--porcelain"), "")
+
+    def test_code_repo_moves_nothing_and_keeps_its_rules(self):
+        repo = fixture_code_repo(self.tmp)
+        before = snapshot(repo)
+        r = run_wr("adopt", str(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        after = snapshot(repo)
+        for rel in ("README.md", "src/app.py", "tests/test_app.py", "dist/bundle.js"):
+            self.assertEqual(after[rel], before[rel], rel)          # nothing moved or rewritten
+        self.assertTrue(after[".gitignore"].startswith(before[".gitignore"]))
+        agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("workrealm:rules:start", agents)
+        self.assertIn("- Format with black.", agents.split("## Project-specific rules")[1])
+        claude = (repo / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertTrue(claude.startswith("@AGENTS.md"))
+        self.assertIn("Be terse.", claude)
+        meta = json.loads((repo / ".workrealm.json").read_text())
+        self.assertEqual(meta["layout"]["src"], "src")
+        self.assertNotEqual(meta["layout"]["releases"], "dist")      # ignored build output is not a role
+        self.assertEqual(git(repo, "config", "core.hooksPath").strip(), ".githooks")
+        done = subprocess.run([sys.executable, ".ai/checkpoint.py", "chore: adopt WorkRealm", "Rules and checks."],
+                              cwd=repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(doctor(repo).returncode, 0)
+        self.assertNotEqual(run_wr("adopt", str(repo)).returncode, 0)  # already a workspace
+
+    def test_dirty_repo_is_refused(self):
+        repo = fixture_code_repo(self.tmp)
+        write(repo / "src" / "wip.py", "x")
+        self.assertNotEqual(run_wr("adopt", str(repo)).returncode, 0)
+
+    def test_research_folder_keeps_its_names_and_conventions(self):
+        folder = fixture_research_folder(self.tmp)
+        r = run_wr("adopt", str(folder), "--tier", "project")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("baseline before adopting", git(folder, "log", "--oneline"))
+        self.assertIn("scratch/", r.stdout)                            # reported, not touched
+        meta = json.loads((folder / ".workrealm.json").read_text())
+        lay = meta["layout"]
+        self.assertEqual((lay["notes"], lay["sources"], lay["decisions"], lay["adr"], lay["releases"], lay["archive"]),
+                         ("notes", "literature", "decisions", "decisions", "dist", "old"))
+        self.assertIn("notes", meta["naming_relaxed"])
+        self.assertIn("releases", meta["naming_relaxed"])              # dist/v1 is not v1.2.0
+        self.assertEqual(meta["naming_overrides"]["adr"]["example"], "ADR-001-title.md")
+        agents = (folder / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("`literature/`", agents)                         # the rules name the real folders
+        self.assertNotIn("`references/`", agents)
+        self.assertTrue((folder / "decisions" / "DECISIONS.md").exists())
+        self.assertTrue((folder / "literature" / "inbox" / "README.md").exists())
+        done = subprocess.run([sys.executable, ".ai/checkpoint.py", "chore: adopt WorkRealm", "Rules and checks."],
+                              cwd=folder, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+        write(folder / "literature" / "paper.pdf", "edited")
+        self.assertIn("R-SOURCES", commit(folder, "docs: tweak paper").stderr)
+        subprocess.run(["git", "reset", "-q", "--hard"], cwd=folder)
+        write(folder / "notes" / "Loose Thoughts.md", "x")             # notes naming relaxed
+        self.assertEqual(commit(folder, "docs: thoughts").returncode, 0)
+        write(folder / "decisions" / "ADR-001-database.md",            # a legacy ADR may be edited
+              "# ADR-001\n\n## Decision\n\nPostgres 16.\n")
+        self.assertEqual(commit(folder, "docs: adr", "Version pinned.").returncode, 0)
+        r = helper(folder, "adr", "new", "Cache layer")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((folder / "decisions" / "ADR-003-cache-layer.md").exists())
+        self.assertEqual(commit(folder, "docs: adr cache", "Needs an argued decision.").returncode, 0)
+        write(folder / "decisions" / "0004-other.md", (folder / "decisions" / "ADR-003-cache-layer.md").read_text())
+        self.assertIn("R-PLACE", commit(folder, "docs: adr", "why").stderr)  # the folder's own style holds
+
+    def test_upgrade_keeps_an_adopted_layout(self):
+        folder = fixture_research_folder(self.tmp)
+        self.assertEqual(run_wr("adopt", str(folder), "--tier", "task").returncode, 0)
+        subprocess.run([sys.executable, ".ai/checkpoint.py", "chore: adopt", "x"], cwd=folder, capture_output=True)
+        r = run_wr("upgrade", "--to", "project", "--path", str(folder))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        meta = json.loads((folder / ".workrealm.json").read_text())
+        self.assertEqual(meta["layout"]["sources"], "literature")
+        self.assertIn("!literature/inbox", meta["protected"])
+        self.assertFalse((folder / "references").exists())
+        self.assertFalse((folder / "docs" / "notes").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

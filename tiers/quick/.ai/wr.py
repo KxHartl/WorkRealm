@@ -330,14 +330,25 @@ def cmd_plan_new(args) -> None:
            "|---|---|---|\n|  |  |  |\n\n## Risks\n")
 
 
+ADR_LIKE = re.compile(r"^(?P<pre>[A-Za-z]*[-_]?)(?P<num>\d+)(?P<sep>[-_])[^/]+\.md$")
+
+
 def cmd_adr_new(args) -> None:
     need("project")
     folder = path_of("adr")
-    nums = [int(m.group(1)) for p in folder.glob("*.md") if (m := re.match(r"(\d{4})-", p.name))]
-    n = max(nums, default=0) + 1
-    path = folder / f"{n:04d}-{slug(args.title)}.md"
-    template = (folder / "TEMPLATE.md").read_text(encoding="utf-8")
-    text = (template.replace("# NNNN — Title", f"# {n:04d} — {args.title}")
+    found = [m for p in folder.glob("*.md") if (m := ADR_LIKE.match(p.name))]
+    # Follow the numbering the folder already uses (an adopted ADR-001-x.md), else NNNN-title.md.
+    pre, width, sep = max(((m["pre"], len(m["num"]), m["sep"]) for m in found),
+                          key=lambda s: sum(1 for m in found if (m["pre"], len(m["num"]), m["sep"]) == s),
+                          default=("", 4, "-"))
+    n = max((int(m["num"]) for m in found), default=0) + 1
+    number = f"{pre}{n:0{width}d}"
+    path = folder / f"{number}{sep}{slug(args.title)}.md"
+    template_path = folder / "TEMPLATE.md"
+    if not template_path.exists():
+        die(f"{rel(template_path)} is missing; restore it with: wr doctor --fix")
+    template = template_path.read_text(encoding="utf-8")
+    text = (template.replace("# NNNN — Title", f"# {number} — {args.title}")
             .replace("**Status:** Proposed | Accepted | Superseded by NNNN", "**Status:** Proposed")
             .replace("**Date:** YYYY-MM-DD", f"**Date:** {today()}"))
     create(path, text)
