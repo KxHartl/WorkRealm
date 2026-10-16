@@ -871,5 +871,159 @@ class TestAdopt(Base):
         self.assertFalse((folder / "docs" / "notes").exists())
 
 
+def checkpoint(ws: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, ".ai/checkpoint.py", *args], cwd=ws, capture_output=True, text=True)
+
+
+class TestIntegrations(Base):
+    def test_new_with_writes_mcp_entries_and_env_example(self):
+        ws = self.new("i1", "--with", "github,rag")
+        mcp = json.loads((ws / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+        self.assertEqual(mcp["github"]["type"], "http")
+        self.assertEqual(mcp["github"]["headers"]["Authorization"], "Bearer ${GITHUB_PAT}")
+        self.assertEqual(mcp["agentbrain-rag"]["type"], "stdio")
+        self.assertIn("rag_server.py", " ".join(mcp["agentbrain-rag"]["args"]))
+        self.assertIn("GITHUB_PAT=", (ws / ".env.example").read_text(encoding="utf-8"))
+        meta = json.loads((ws / ".workrealm.json").read_text())
+        self.assertEqual(meta["integrations"], ["github", "rag"])
+        self.assertEqual(git(ws, "status", "--porcelain"), "")  # committed with the scaffold
+        r = run_wr("new", "i2", "--dir", str(self.tmp), "--no-remote", "--with", "jira")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unknown integration", r.stderr)
+
+    def test_integrate_keeps_other_servers_and_doctor_restores_entries(self):
+        ws = self.new("i3", "--quick")
+        mine = {"mcpServers": {"mine": {"type": "stdio", "command": "x"}}, "extra": 1}
+        write(ws / ".mcp.json", json.dumps(mine))
+        r = run_wr("integrate", "rag", "--path", str(ws))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = run_wr("integrate", "github", "--path", str(ws))
+        data = json.loads((ws / ".mcp.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(data["mcpServers"]), {"mine", "agentbrain-rag", "github"})
+        self.assertEqual(data["extra"], 1)
+        self.assertEqual(json.loads((ws / ".workrealm.json").read_text())["integrations"], ["github", "rag"])
+        del data["mcpServers"]["github"]
+        write(ws / ".mcp.json", json.dumps(data))
+        env = {k: v for k, v in NO_BRAIN.items() if k != "GITHUB_PAT"}
+        out = run_wr("doctor", "--path", str(ws), env=env).stdout
+        self.assertIn("WARN  integrations", out)
+        self.assertIn("GITHUB_PAT not set", out)
+        self.assertIn("no AgentBrain RAG server", out)
+        run_wr("doctor", "--path", str(ws), "--fix", env=env)
+        data = json.loads((ws / ".mcp.json").read_text(encoding="utf-8"))
+        self.assertIn("github", data["mcpServers"])
+        self.assertIn("mine", data["mcpServers"])
+        ci = run_wr("doctor", "--path", str(ws), "--ci", env=env).stdout
+        self.assertNotIn("GITHUB_PAT", ci)  # credentials are local state
+
+    def test_literal_token_in_mcp_json_is_refused(self):
+        ws = self.new("i4", "--quick", "--with", "github")
+        path = ws / ".mcp.json"
+        write(path, path.read_text(encoding="utf-8").replace("${GITHUB_PAT}", "ghp_" + "a1" * 18))
+        r = commit(ws, "chore: pin token")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("R-SECRETS", r.stderr)
+        subprocess.run(["git", "commit", "-q", "--no-verify", "-m", "chore: pin token"], cwd=ws)
+        self.assertIn("FAIL  secrets", run_wr("doctor", "--path", str(ws), "--ci").stdout)
+
+    def test_rag_launcher_finds_agentbrain_and_runs_in_the_workspace(self):
+        ws = self.new("i5", "--quick", "--with", "rag")
+        launcher = [sys.executable, str(ws / ".ai" / "rag_server.py")]
+        env = {**os.environ, "AGENTBRAIN_PATH": str(self.tmp / "nobrain"), "CLAUDE_PROJECT_DIR": str(ws)}
+        r = subprocess.run(launcher, capture_output=True, text=True, env=env, cwd=self.tmp)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no AgentBrain RAG server", r.stderr)
+        brain = self.tmp / "brain"
+        write(brain / "scripts" / "rag" / "mcp_server.py", "import os\nprint(os.getcwd())\n")
+        env["AGENTBRAIN_PATH"] = str(brain)
+        r = subprocess.run(launcher, capture_output=True, text=True, env=env, cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(Path(r.stdout.strip()).resolve(), ws.resolve())
+
+
+class TestTicket(Base):
+    def test_workspace_for_a_ticket(self):
+        ws = self.new("k1", "--ticket", "ABC-12")
+        self.assertEqual(json.loads((ws / ".workrealm.json").read_text())["ticket"], "ABC-12")
+        self.assertIn("- **Ticket:** ABC-12", (ws / "STATE.md").read_text(encoding="utf-8"))
+        self.assertIn("Refs: ABC-12", git(ws, "log", "-1", "--format=%B"))
+        write(ws / "a.txt", "x")
+        self.assertEqual(checkpoint(ws, "feat: add a", "First piece.").returncode, 0)
+        self.assertIn("First piece.\n\nRefs: ABC-12", git(ws, "log", "-1", "--format=%B"))
+        write(ws / "b.txt", "x")
+        r = commit(ws, "feat: add b")
+        self.assertEqual(r.returncode, 0, r.stderr)  # a warning, never a block
+        self.assertIn("R-TICKET", r.stderr)
+        write(ws / "c.txt", "x")
+        self.assertNotIn("R-TICKET", commit(ws, "feat: add c", "Refs: ABC-12").stderr)
+        r = run_wr("new", "k2", "--dir", str(self.tmp), "--no-remote", "--ticket", "abc12")
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_ticket_branch_names_the_key_and_commits_reference_it(self):
+        ws = self.new("k3", "--quick")
+        r = helper(ws, "ticket", "start", "XY-7", "Cache warm-up", "--type", "fix")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(git(ws, "branch", "--show-current").strip(), "fix/XY-7-cache-warm-up")
+        self.assertIn("Ticket: XY-7", helper(ws, "status").stdout)
+        write(ws / "a.txt", "x")
+        self.assertEqual(checkpoint(ws, "fix: warm the cache").returncode, 0)
+        self.assertIn("Refs: XY-7", git(ws, "log", "-1", "--format=%B"))
+        subprocess.run(["git", "switch", "-q", "main"], cwd=ws)
+        self.assertNotEqual(helper(ws, "ticket", "start", "XY-7", "Cache warm-up", "--type", "fix").returncode, 0)
+        self.assertNotEqual(helper(ws, "ticket", "start", "not-a-key").returncode, 0)
+        write(ws / "b.txt", "x")
+        self.assertNotIn("R-TICKET", commit(ws, "feat: no ticket here").stderr)
+
+
+class TestCI(Base):
+    def ci(self, ws: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, ".ai/policy.py", "ci", *args], cwd=ws, capture_output=True, text=True)
+
+    def test_workflow_ships_from_the_task_tier_as_a_tool_file(self):
+        quick = self.new("c1", "--quick")
+        self.assertFalse((quick / ".github").exists())
+        run_wr("upgrade", "--to", "task", "--path", str(quick))
+        flow = quick / ".github" / "workflows" / "workrealm.yml"
+        self.assertTrue(flow.exists())
+        self.assertIn("python .ai/policy.py ci", flow.read_text(encoding="utf-8"))
+        write(flow, "name: tampered\n")
+        self.assertIn(".github/workflows/workrealm.yml", run_wr("doctor", "--path", str(quick)).stdout)
+        run_wr("doctor", "--path", str(quick), "--fix")
+        self.assertIn("policy.py ci", flow.read_text(encoding="utf-8"))
+
+    def test_ci_catches_what_skipped_the_hooks(self):
+        ws = self.new("c2")
+        before = git(ws, "rev-parse", "HEAD").strip()
+        self.assertEqual(self.ci(ws, "--before", before).returncode, 0)
+        write(ws / "references" / "spec.pdf", "v1")
+        write(ws / "references" / "SOURCES_LOG.md",
+              (ws / "references" / "SOURCES_LOG.md").read_text(encoding="utf-8")
+              + "2026-10-16 — https://x — references/spec.pdf — spec\n")
+        self.assertEqual(commit(ws, "docs: add spec").returncode, 0)
+        write(ws / "references" / "spec.pdf", "v2")
+        subprocess.run(["git", "commit", "-qam", "tweaked the spec", "--no-verify"], cwd=ws)
+        r = self.ci(ws, "--before", before)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("R-COMMIT", r.stderr)
+        self.assertIn("R-SOURCES", r.stderr)
+        head = git(ws, "rev-parse", "HEAD").strip()
+        self.assertEqual(self.ci(ws, "--before", head).returncode, 0)  # nothing new pushed
+
+    def test_ci_range_of_a_new_branch_skips_what_other_branches_have(self):
+        ws = self.new("c3", "--quick")
+        bare = self.tmp / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=ws, check=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"], cwd=ws, check=True)
+        subprocess.run(["git", "fetch", "-q", "origin"], cwd=ws, check=True)
+        subprocess.run(["git", "switch", "-q", "-c", "feat/work"], cwd=ws)
+        write(ws / "a.txt", "x")
+        subprocess.run(["git", "add", "-A"], cwd=ws)
+        subprocess.run(["git", "commit", "-q", "--no-verify", "-m", "wip"], cwd=ws)
+        r = self.ci(ws, "--before", "0" * 40, "--branch", "feat/work")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stderr.count("R-COMMIT"), 1)  # only the new commit, not main's history
+
+
 if __name__ == "__main__":
     unittest.main()

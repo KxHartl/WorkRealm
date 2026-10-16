@@ -4,6 +4,7 @@
     python .ai/wr.py status                      where things stand (also shown at session start)
     python .ai/wr.py checkpoint "type: msg" [body]
     python .ai/wr.py handoff                     before ending a session
+    python .ai/wr.py ticket start KEY [TITLE] [--type fix]   a branch named after the ticket
     python .ai/wr.py note TOPIC                  task+    a dated note in docs/notes/
     python .ai/wr.py source add URL --desc D [--file LOCAL] [--name NAME]
                                                  task+    save + log (project: into the inbox)
@@ -36,7 +37,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from policy import layout  # noqa: E402
+from policy import TICKET_KEY, active_ticket, layout  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 TIERS = ("quick", "task", "project")
@@ -178,6 +179,11 @@ def status_text() -> str:
     lines = [f"WorkRealm workspace '{m.get('name', ROOT.name)}' -- tier {m.get('tier', '?')}, "
              f"WorkRealm {m.get('workrealm_version', '?')}",
              f"Git: {g['branch']}, {g['dirty']} uncommitted, {pushed}"]
+    ticket = active_ticket(ROOT, m)
+    if ticket:
+        lines.append(f"Ticket: {ticket} (commits end with `Refs: {ticket}`; checkpoint adds it)")
+    if m.get("integrations"):
+        lines.append(f"Integrations (.mcp.json): {', '.join(m['integrations'])}")
     items = open_items()
     if items is not None:
         lines.append(f"Open items: {items} ({layout(m)['decisions']}/OPEN-ITEMS.md)")
@@ -212,6 +218,19 @@ def cmd_handoff(args) -> None:
           "  1. STATE.md: what was done, the next concrete step, anything blocking or waiting on the owner.\n"
           "  2. Anything unresolved that someone must answer -> python .ai/wr.py open-item ...\n"
           '  3. python .ai/checkpoint.py "docs: update STATE for handoff"  (the tree must be clean)')
+
+
+def cmd_ticket_start(args) -> None:
+    key = args.key.strip()
+    if not TICKET_KEY.fullmatch(key):
+        die(f"{key!r} is not a ticket key: use the tracker's form, e.g. ABC-123")
+    name = f"{args.type}/{key}" + (f"-{slug(args.title)}" if args.title else "")
+    if git("rev-parse", "--verify", "-q", f"refs/heads/{name}").returncode == 0:
+        die(f"branch {name} already exists: git switch {name}")
+    r = git("switch", "-c", name)
+    if r.returncode != 0:
+        die(r.stderr.strip())
+    print(f"on branch {name}. Commits made with python .ai/checkpoint.py end with `Refs: {key}`.")
 
 
 # ---------------------------------------------------------------- task tier
@@ -432,6 +451,12 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--agent", help=argparse.SUPPRESS)
     c.set_defaults(func=cmd_checkpoint)
     sub.add_parser("handoff", help="status plus the end-of-session checklist").set_defaults(func=cmd_handoff)
+    t = sub.add_parser("ticket", help="work on a ticket").add_subparsers(dest="action", required=True)
+    ts = t.add_parser("start", help="create and switch to a branch named after the ticket")
+    ts.add_argument("key", help="ticket key, e.g. ABC-123")
+    ts.add_argument("title", nargs="?", help="a few words for the branch name")
+    ts.add_argument("--type", default="feat", choices=["feat", "fix", "docs", "chore", "refactor", "test"])
+    ts.set_defaults(func=cmd_ticket_start)
 
     n = sub.add_parser("note", help="new dated note")
     n.add_argument("topic")

@@ -1,0 +1,28 @@
+# Installed by WorkRealm. Runs the workspace's own checks (.ai/policy.py) on every push and pull
+# request, so a commit made with --no-verify, from a web editor or on another machine is still
+# checked. Needs no secrets. Refreshed by `wr upgrade` and `wr doctor --fix`.
+name: WorkRealm checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Policy checks on the pushed commits and the whole tree
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: python .ai/policy.py ci --before "$BEFORE" --base "$BASE" --branch "$BRANCH"

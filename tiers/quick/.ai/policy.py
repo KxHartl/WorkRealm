@@ -8,6 +8,8 @@ file, so a rule cannot drift between layers:
     git commit-msg   python .ai/policy.py commit-msg FILE
     Claude hooks     .ai/hooks/*.py call hook_main() / bash_hook_main()
     checkpoint.py    calls staged_findings()
+    GitHub workflow  python .ai/policy.py ci --before SHA --base SHA --branch NAME
+                     (the pushed commits again, so a `--no-verify` commit is still caught)
 
 Everything workspace-specific is data in .workrealm.json: which checks run ("checks"),
 where things live ("layout"), what is write-once ("protected"), naming ("naming"),
@@ -43,6 +45,7 @@ ENFORCES = {
     "R-EVIDENCE": {"git": ["protected_paths"], "claude": ["protect_paths.py", "bash_guard.py"]},
     "R-INBOX": {"claude": ["protect_paths.py", "bash_guard.py"]},
     "R-ADR": {"git": ["adr_format"]},
+    "R-TICKET": {"git": ["ticket_ref"]},
 }
 
 # Defaults for a workspace whose .workrealm.json predates "layout"; wr.py writes the real one.
@@ -70,6 +73,13 @@ CONVENTIONAL = re.compile(
 EXEMPT_MSG = re.compile(r"^(Merge |Revert \"|fixup! |squash! |amend! )")
 AI_TAG = "\U0001F916 [AI]"  # robot face: marks a commit whose work a subagent did
 AI_TRAILER = re.compile(r"^AI-Agent:\s*\S+", re.M)
+# A literal credential in a config file (a ${VAR} reference is fine).
+INLINE_SECRET = re.compile(r'"[\w-]*(token|secret|password|api[_-]?key)[\w-]*"\s*:\s*"(?!\$\{)[^"]{8,}"'
+                           r'|Bearer\s+(?!\$\{)[A-Za-z0-9_.~+/=-]{8,}|\b(ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{16,}', re.I)
+SECRET_CONFIGS = {".mcp.json", ".claude/settings.json"}
+TICKET_KEY = re.compile(r"(?<![A-Za-z0-9])([A-Z][A-Z0-9]+-\d+)(?![A-Za-z0-9])")
+REFS_TRAILER = re.compile(r"^Refs:\s*(.+)$", re.M)
+NO_COMMIT = "0" * 40
 NON_ENGLISH = re.compile("[\u010d\u0107\u017e\u0161\u0111\u010c\u0106\u017d\u0160\u0110]")  # Croatian letters
 TEXT_EXT = {".md", ".txt", ".py", ".ps1", ".sh", ".json", ".yaml", ".yml", ".toml", ".js", ".ts"}
 
@@ -192,6 +202,21 @@ def log_rows(text: str) -> int:
     return max(0, len(rows) - 2)
 
 
+def current_branch(root: Path) -> str:
+    return git(root, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
+
+
+def active_ticket(root: Path, meta: dict, branch: str | None = None) -> str | None:
+    """The ticket the work belongs to: the key in the branch name (feat/ABC-12-x), else the
+    workspace's own ticket from .workrealm.json, else none."""
+    m = TICKET_KEY.search(current_branch(root) if branch is None else branch)
+    return m.group(1) if m else meta.get("ticket") or None
+
+
+def refs_ticket(message: str, key: str) -> bool:
+    return any(key in TICKET_KEY.findall(line) for line in REFS_TRAILER.findall(message))
+
+
 def decision_homes(meta: dict) -> list[str]:
     lay = layout(meta)
     return [lay["decisions"], lay["archive"]] + meta.get("snapshots", [])
@@ -204,6 +229,9 @@ def check_secrets(root, meta, changes):
         if status != "D" and SECRETISH.search(path) and name_of(path) not in SECRET_ALLOWED:
             yield block("R-SECRETS", f"{path} looks like a secret. Unstage it (`git reset -q {path}`) "
                                      "and add it to .gitignore. If it was ever pushed: rotate it.")
+        elif status != "D" and path in SECRET_CONFIGS and INLINE_SECRET.search(staged_text(root, path)):
+            yield block("R-SECRETS", f"{path} holds a literal credential. Reference an environment "
+                                     "variable instead (\"Bearer ${GITHUB_PAT}\"). If it was ever pushed: rotate it.")
 
 
 def check_protected_paths(root, meta, changes):
@@ -375,7 +403,10 @@ def staged_findings(root: Path = ROOT) -> list[Finding]:
 
 # ---------------------------------------------------------------- commit message
 
-def message_findings(message: str, root: Path = ROOT) -> list[Finding]:
+def message_findings(message: str, root: Path = ROOT, changes: list[tuple[str, str]] | None = None,
+                     branch: str | None = None) -> list[Finding]:
+    """Checks on a commit message. `changes` and `branch` default to the staged commit's (CI
+    passes those of each pushed commit)."""
     meta = load_meta(root)
     enabled = meta.get("checks", [])
     lines = [ln for ln in message.splitlines() if not ln.startswith("#")]
@@ -392,11 +423,58 @@ def message_findings(message: str, root: Path = ROOT) -> list[Finding]:
             found.append(block("R-COMMIT", f"the {AI_TAG} tag and the `AI-Agent:` trailer go together, and only "
                                            "on commits a subagent made. Use python .ai/checkpoint.py."))
     decisions = layout(meta)["decisions"]
-    body_text = AI_TRAILER.sub("", body).strip()
+    body_text = REFS_TRAILER.sub("", AI_TRAILER.sub("", body)).strip()
+    changes = staged_changes(root) if changes is None else changes
     if "decision_commit_body" in enabled and not body_text \
-            and any(under(p, decisions) for _, p in staged_changes(root)):
+            and any(under(p, decisions) for _, p in changes):
         found.append(block("R-DECISIONS", f"this commit changes {decisions}/; the body must say why "
                                           "(it is the record of why a decision moved)."))
+    ticket = active_ticket(root, meta, branch) if "ticket_ref" in enabled else None
+    if ticket and not refs_ticket(message, ticket):
+        found.append(warn("R-TICKET", f"this work belongs to {ticket}; end the message with "
+                                      f"`Refs: {ticket}` (python .ai/checkpoint.py adds it)."))
+    return found
+
+
+# ---------------------------------------------------------------- CI
+
+def ci_range(root: Path, before: str = "", base: str = "", branch: str = "") -> list[str]:
+    """The commits a push or pull request brings, oldest first. A pull request: base..HEAD.
+    A push: before..HEAD; a new branch: what no other remote branch has yet."""
+    def exists(sha: str) -> bool:
+        return bool(sha) and sha != NO_COMMIT and git(root, "cat-file", "-e", sha + "^{commit}").returncode == 0
+    if exists(base):
+        spec = [f"{base}..HEAD"]
+    elif exists(before):
+        spec = [f"{before}..HEAD"]
+    else:
+        others = [r for r in git(root, "for-each-ref", "--format=%(refname)", "refs/remotes").stdout.split()
+                  if not r.endswith("/HEAD") and not (branch and r.endswith(f"/{branch}"))]
+        spec = ["HEAD", "--not", *others] if others else ["HEAD"]
+    out = git(root, "rev-list", "--reverse", "--no-merges", *spec)
+    return out.stdout.split() if out.returncode == 0 else []
+
+
+def commit_changes(root: Path, sha: str) -> list[tuple[str, str]]:
+    out = git(root, "diff-tree", "--root", "--no-commit-id", "-r", "--name-status", "--no-renames", "-z", sha).stdout
+    parts = [p for p in out.split("\0") if p]
+    return [(parts[i][0], parts[i + 1]) for i in range(0, len(parts) - 1, 2)]
+
+
+def ci_findings(root: Path = ROOT, before: str = "", base: str = "", branch: str | None = None) -> list[Finding]:
+    """What CI checks: every pushed commit's message and write-once paths (a commit made with
+    --no-verify skipped the hooks), then the whole tree for secrets and existing violations."""
+    meta = load_meta(root)
+    found = []
+    branch = current_branch(root) if branch is None else branch
+    for sha in ci_range(root, before, base, branch):
+        message = git(root, "log", "-1", "--format=%B", sha).stdout
+        changes = commit_changes(root, sha)
+        for f in message_findings(message, root, changes, branch) + list(check_protected_paths(root, meta, changes)):
+            found.append(Finding(f.level, f.rule, f"{sha[:7]}: {f.text}"))
+    tracked = [("A", t) for t in git(root, "ls-files", "-z").stdout.split("\0") if t]
+    found += list(check_secrets(root, meta, tracked))
+    found += [Finding("warn", f.rule, f.text) for f in tree_findings(root) if f.rule != "R-SECRETS"]
     return found
 
 
@@ -628,6 +706,17 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["commit-msg"] and len(argv) == 2:
         return report(message_findings(Path(argv[1]).read_text(encoding="utf-8", errors="replace")),
                       "commit-msg")
+    if argv[:1] == ["ci"]:
+        import argparse
+        p = argparse.ArgumentParser(prog="policy.py ci")
+        for opt in ("--before", "--base", "--branch"):
+            p.add_argument(opt, default="")
+        a = p.parse_args(argv[1:])
+        found = ci_findings(ROOT, a.before, a.base, a.branch or None)
+        code = report(found, "ci")
+        print(f"ci: {sum(f.level == 'block' for f in found)} failure(s), "
+              f"{sum(f.level == 'warn' for f in found)} warning(s)", file=sys.stderr)
+        return code
     print(__doc__, file=sys.stderr)
     return 2
 

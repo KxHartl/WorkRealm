@@ -4,6 +4,8 @@
     python wr.py new NAME              task tier (the default, no flag)
     python wr.py new NAME --quick      quick tier: hours to a day
     python wr.py new NAME --project    project tier: weeks to months, experiments, ADRs, releases
+    python wr.py new NAME --with github,rag --ticket ABC-123   integrations, the ticket it is for
+    python wr.py integrate github,rag  add integrations (.mcp.json) to an existing workspace
     python wr.py upgrade --to project  move a workspace up a tier (adds files only)
     python wr.py sync [--check]        re-sync AgentBrain work agents and skills
     python wr.py doctor [--fix] [--ci] check that the guard-rails still work; repair what is safe
@@ -79,7 +81,7 @@ CHAT_LANG = {
 
 # Which .ai/policy.py checks run, per tier. Each tier adds; none removes or renames.
 CHECKS = {
-    "quick": ["secrets", "commit_msg", "english"],
+    "quick": ["secrets", "commit_msg", "english", "ticket_ref"],
     "task": ["protected_paths", "sources_logged", "naming", "decision_register", "decision_commit_body"],
     "project": ["zone_placement", "adr_format", "inbox"],
 }
@@ -102,10 +104,34 @@ NAMING = {
 }
 # Tool-owned paths: refreshed by `wr upgrade` and `wr doctor --fix` so a workspace runs the
 # current checks. Everything else is the user's and is never overwritten.
-TOOL_OWNED = (".ai/", ".githooks/", ".claude/skills/")
+TOOL_OWNED = (".ai/", ".githooks/", ".claude/skills/", ".github/workflows/workrealm.yml")
 HOOKS_PATH = ".githooks"
 SHIMS = {"CLAUDE.md": "@AGENTS.md", "GEMINI.md": "@./AGENTS.md"}
 STRUCTURAL = {"README.md", ".gitkeep", "TEMPLATE.md", "INDEX.md"}
+TICKET = re.compile(r"[A-Z][A-Z0-9]+-\d+")
+
+# MCP servers a workspace can opt into (`--with`). Each entry is written to .mcp.json under its
+# server name; values reference environment variables, never secrets. Claude Code expands ${VAR}
+# from the environment it starts in and sets CLAUDE_PROJECT_DIR for the servers it spawns.
+INTEGRATIONS = {
+    "github": {
+        "server": "github",
+        "entry": {"type": "http", "url": "https://api.githubcopilot.com/mcp/",
+                  "headers": {"Authorization": "Bearer ${GITHUB_PAT}",
+                              "X-MCP-Toolsets": "repos,issues,pull_requests,actions"}},
+        "env": {"GITHUB_PAT": "GitHub fine-grained token, this repository only: Contents read, "
+                              "Issues and Pull requests read/write, Actions read"},
+        "about": "issues, pull requests, CI runs and code, through GitHub's remote MCP server",
+    },
+    "rag": {
+        "server": "agentbrain-rag",
+        "entry": {"type": "stdio", "command": "python",
+                  "args": ["-c", "import os, runpy; runpy.run_path(os.path.join(os.environ.get("
+                                 "'CLAUDE_PROJECT_DIR', '.'), '.ai', 'rag_server.py'), run_name='__main__')"]},
+        "env": {},
+        "about": "the shared document corpus (search, ingest), through AgentBrain's RAG server",
+    },
+}
 
 
 def die(msg: str) -> None:
@@ -143,7 +169,7 @@ def relayout(text: str, lay: dict) -> str:
 
 def map_path(rel: str, lay: dict) -> str | None:
     """Where a template file goes in a workspace with this layout (None: nowhere)."""
-    if "/" not in rel or rel.startswith((".ai/", ".githooks/", ".claude/")):
+    if "/" not in rel or rel.startswith((".ai/", ".githooks/", ".claude/", ".github/")):
         return rel
     hits = [k for k, v in LAYOUT.items() if rel == v or rel.startswith(v + "/")]
     if hits:
@@ -343,6 +369,64 @@ def install_githooks(dest: Path) -> None:
     git(dest, "config", "core.hooksPath", HOOKS_PATH)
 
 
+# ---------------------------------------------------------------- integrations
+
+def parse_integrations(value: str | None) -> list[str]:
+    names = [n.strip() for n in (value or "").split(",") if n.strip()]
+    unknown = [n for n in names if n not in INTEGRATIONS]
+    if unknown:
+        die(f"unknown integration(s): {', '.join(unknown)}. Available: {', '.join(INTEGRATIONS)}")
+    return names
+
+
+def read_mcp(dest: Path) -> dict:
+    path = dest / ".mcp.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def build_mcp(mcp: dict, names: list[str]) -> dict:
+    """WorkRealm's server entries for `names`; every other server and key is kept."""
+    mcp = json.loads(json.dumps(mcp))
+    servers = mcp.setdefault("mcpServers", {})
+    for name in names:
+        servers[INTEGRATIONS[name]["server"]] = INTEGRATIONS[name]["entry"]
+    return mcp
+
+
+def env_example_lines(names: list[str]) -> list[str]:
+    return [f"# {why}\n{var}=" for n in names for var, why in INTEGRATIONS[n]["env"].items()]
+
+
+def apply_integrations(dest: Path, names: list[str], meta: dict) -> list[str]:
+    """Write .mcp.json entries and .env.example lines; record the names in meta."""
+    if not names:
+        return []
+    changed = []
+    mcp = build_mcp(read_mcp(dest), names)
+    if mcp != read_mcp(dest):
+        (dest / ".mcp.json").write_text(json.dumps(mcp, indent=2) + "\n", encoding="utf-8", newline="\n")
+        changed.append(".mcp.json")
+    example = dest / ".env.example"
+    text = example.read_text(encoding="utf-8") if example.exists() else ""
+    add = [block for block in env_example_lines(names) if block.split("\n")[-1] not in text]
+    if add:
+        lead = "" if not text or text.endswith("\n") else "\n"
+        example.write_text(text + lead + "\n".join(add) + "\n", encoding="utf-8", newline="\n")
+        changed.append(".env.example")
+    meta["integrations"] = sorted(set(meta.get("integrations", [])) | set(names))
+    return changed
+
+
+def integration_notes(names: list[str]) -> list[str]:
+    notes = [f"{n}: {INTEGRATIONS[n]['about']}" for n in names]
+    needed = [v for n in names for v in INTEGRATIONS[n]["env"]]
+    if needed:
+        notes.append(f"set {', '.join(needed)} in your environment before starting Claude Code (it does "
+                     "not read .env); .env.example says what each one is")
+    notes.append("Claude Code asks once whether to trust the servers in .mcp.json")
+    return notes
+
+
 # ---------------------------------------------------------------- AgentBrain
 
 BRAIN_NAMESPACE = "work"
@@ -426,9 +510,14 @@ def cmd_new(args: argparse.Namespace) -> None:
         die(f"{dest} exists and is not empty (to bring an existing folder in: wr adopt {dest})")
     if shutil.which("git") is None:
         die("git not found")
+    integrations = parse_integrations(args.with_)
+    if args.ticket and not TICKET.fullmatch(args.ticket):
+        die(f"{args.ticket!r} is not a ticket key: use the tracker's form, e.g. ABC-123")
 
     today = dt.date.today().isoformat()
     meta = {"name": args.name, "created": today, "lang": args.lang}
+    if args.ticket:
+        meta["ticket"] = args.ticket
     meta.update(tier_meta(tier, meta))
     ctx = context(meta)
     dest.mkdir(parents=True, exist_ok=True)
@@ -436,6 +525,12 @@ def cmd_new(args: argparse.Namespace) -> None:
         write_file(dest / rel, content)
     write_agents_md(dest, tier, ctx, LAYOUT)
     write_settings(dest, tier)
+    apply_integrations(dest, integrations, meta)
+    if args.ticket:
+        state = dest / "STATE.md"
+        state.write_text(re.sub(r"^(- \*\*Tier:\*\*.*)$", rf"\1\n- **Ticket:** {args.ticket}",
+                                state.read_text(encoding="utf-8"), count=1, flags=re.M),
+                         encoding="utf-8", newline="\n")
     _, brain_status = sync_brain(dest, tier, meta)
     write_meta(dest, meta)
 
@@ -443,12 +538,17 @@ def cmd_new(args: argparse.Namespace) -> None:
     install_githooks(dest)
     git(dest, "add", "-A")
     git(dest, "commit", "-q", "-m", f"chore: scaffold {tier} workspace from WorkRealm {VERSION}",
-        "-m", "Generated structure, rules and hooks; nothing project-specific yet.")
+        "-m", "Generated structure, rules and hooks; nothing project-specific yet.",
+        *(["-m", f"Refs: {args.ticket}"] if args.ticket else []))
 
     remote = args.remote if args.remote is not None else REMOTE_BY_DEFAULT[tier]
     status = create_remote(dest, args.name) if remote else "no remote (pass --remote to create one)"
-    print(f"Created {tier} workspace: {dest}\n  {status}\n  {brain_status}\n"
-          "  Next: open it in Claude Code and fill in STATE.md.")
+    print(f"Created {tier} workspace: {dest}\n  {status}\n  {brain_status}")
+    if args.ticket:
+        print(f"  ticket {args.ticket}: commits end with `Refs: {args.ticket}` (checkpoint adds it)")
+    for note in integration_notes(integrations) if integrations else []:
+        print(f"  {note}")
+    print("  Next: open it in Claude Code and fill in STATE.md.")
 
 
 def cmd_upgrade(args: argparse.Namespace) -> None:
@@ -487,10 +587,26 @@ def cmd_sync(args: argparse.Namespace) -> None:
         print('Review, then commit: python .ai/checkpoint.py "chore: sync AgentBrain agents and skills"')
 
 
+def cmd_integrate(args: argparse.Namespace) -> None:
+    dest = Path(args.path).resolve()
+    meta = read_meta(dest)
+    names = parse_integrations(args.names)
+    if not names:
+        die(f"name at least one integration: {', '.join(INTEGRATIONS)}")
+    changed = apply_integrations(dest, names, meta)
+    write_meta(dest, meta)
+    print(f"{dest.name}: integrations {', '.join(meta['integrations'])}. Wrote: "
+          f"{', '.join(changed + [META]) }")
+    for note in integration_notes(names):
+        print(f"  {note}")
+    print("Review, then commit:\n"
+          f'  python .ai/checkpoint.py "chore: add {", ".join(names)} integration" '
+          '"MCP servers in .mcp.json; credentials come from the environment."')
+
+
 # ---------------------------------------------------------------- doctor
 
 SECRETISH = re.compile(r"(^|/)(\.env(\..+)?|.*\.pem|.*\.key|id_rsa[^/]*|credentials\.json)$", re.I)
-INLINE_SECRET = re.compile(r'"[\w-]*(token|secret|password|api[_-]?key)[\w-]*"\s*:\s*"(?!\$\{)[^"]{8,}"', re.I)
 
 
 class Doctor:
@@ -512,7 +628,8 @@ class Doctor:
         self.rows.append((level, name, text))
 
     def run(self) -> int:
-        checks = [self.check_meta, self.check_tooling, self.check_settings, self.check_rules]
+        checks = [self.check_meta, self.check_tooling, self.check_settings, self.check_rules,
+                  self.check_integrations]
         if not self.ci:  # local state a fresh CI checkout does not have
             checks += [self.check_hooks, self.check_remote, self.check_tree, self.check_brain]
         checks += [self.check_secrets, self.check_policy]
@@ -574,6 +691,29 @@ class Doctor:
         if missing:
             self.report("WARN", "shims", f"{', '.join(missing)} missing or not importing AGENTS.md",
                         lambda: ", ".join(add_shims(self.dest, self.tier, self.ctx, self.lay)) or "nothing to do")
+
+    def check_integrations(self):
+        names = self.meta.get("integrations", [])
+        if not names:
+            return
+        have = read_mcp(self.dest)
+        if build_mcp(have, names) != have:
+            def repair():
+                apply_integrations(self.dest, names, self.meta)
+                return ".mcp.json entries restored (other servers kept)"
+            self.report("WARN", "integrations", f".mcp.json is missing or changed the {', '.join(names)} "
+                        "entries", repair)
+        else:
+            self.report("OK", "integrations", f".mcp.json has {', '.join(names)}")
+        if self.ci:
+            return
+        unset = [v for n in names for v in INTEGRATIONS[n]["env"] if not os.environ.get(v)]
+        if unset:
+            self.report("WARN", "integrations", f"{', '.join(unset)} not set in this environment: Claude Code "
+                        "starts the server without credentials (see .env.example)")
+        if "rag" in names and not (brain_path() / "scripts" / "rag" / "mcp_server.py").exists():
+            self.report("WARN", "integrations", f"rag: no AgentBrain RAG server at {brain_path()} "
+                        "(needs AgentBrain 2.6.0 or later)")
 
     def check_hooks(self):
         have = git(self.dest, "config", "core.hooksPath", check=False).stdout.strip()
@@ -639,7 +779,8 @@ class Doctor:
         leaks = [t for t in tracked if SECRETISH.search(t) and not t.endswith(".env.example")]
         for name in (".mcp.json", ".claude/settings.json"):
             path = self.dest / name
-            if name in tracked and path.exists() and INLINE_SECRET.search(path.read_text(encoding="utf-8")):
+            if name in tracked and path.exists() and \
+                    template_policy().INLINE_SECRET.search(path.read_text(encoding="utf-8")):
                 leaks.append(f"{name} (a literal secret; use an environment variable)")
         if leaks:
             self.report("FAIL", "secrets", "tracked: " + ", ".join(leaks)
@@ -919,7 +1060,15 @@ def main(argv: list[str] | None = None) -> None:
     rem.add_argument("--remote", dest="remote", action="store_true", default=None,
                      help="create a private GitHub repo (default for task/project)")
     rem.add_argument("--no-remote", dest="remote", action="store_false", help="stay local")
+    n.add_argument("--with", dest="with_", metavar="LIST",
+                   help=f"comma-separated integrations for .mcp.json: {', '.join(INTEGRATIONS)}")
+    n.add_argument("--ticket", metavar="KEY", help="the ticket this workspace is for, e.g. ABC-123")
     n.set_defaults(func=cmd_new)
+
+    i = sub.add_parser("integrate", help="add integrations (MCP servers in .mcp.json) to a workspace")
+    i.add_argument("names", help=f"comma-separated: {', '.join(INTEGRATIONS)}")
+    i.add_argument("--path", default=".", help="workspace root (default: current folder)")
+    i.set_defaults(func=cmd_integrate)
 
     u = sub.add_parser("upgrade", help="move an existing workspace up a tier, adding files only")
     u.add_argument("--to", choices=TIERS[1:], required=True)
@@ -936,7 +1085,7 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--fix", action="store_true", help="repair: hooks path, tool files, settings, rules, "
                                                       "AgentBrain, push")
     d.add_argument("--ci", action="store_true", help="for CI: skip checks of local state (hooks path, remote, "
-                                                     "work tree, AgentBrain); exit 1 on any failure")
+                                                     "work tree, AgentBrain, credentials); exit 1 on any failure")
     d.set_defaults(func=cmd_doctor)
 
     a = sub.add_parser("adopt", help="bring an existing folder under WorkRealm without moving anything")

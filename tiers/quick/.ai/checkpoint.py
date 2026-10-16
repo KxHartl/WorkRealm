@@ -12,6 +12,9 @@ The git hooks run the same checks, and post-commit pushes.
 robot tag and the message an `AI-Agent: NAME` trailer. In Claude Code the bash hook adds
 it automatically for subagents and refuses it from the main agent, so nobody has to
 remember. Commits made at the user's prompt stay unmarked.
+
+On a ticket's branch (feat/ABC-12-...) or in a workspace made for one ticket, the message
+gets a `Refs: ABC-12` trailer unless it already has one.
 """
 import argparse
 import re
@@ -20,7 +23,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from policy import AI_TAG, ROOT, report, safe_stderr, staged_findings  # noqa: E402
+from policy import (AI_TAG, ROOT, active_ticket, load_meta, refs_ticket, report,  # noqa: E402
+                    safe_stderr, staged_findings)
 
 
 def git(*args: str) -> subprocess.CompletedProcess:
@@ -55,8 +59,12 @@ def main(argv: list[str] | None = None) -> int:
 
     subject = mark(args.subject) if args.agent else args.subject
     msg = ["-m", subject] + (["-m", args.body] if args.body else [])
-    if args.agent:
-        msg += ["-m", f"AI-Agent: {args.agent}"]
+    trailers = [f"AI-Agent: {args.agent}"] if args.agent else []
+    ticket = active_ticket(ROOT, load_meta(ROOT))
+    if ticket and not refs_ticket("\n".join([subject, args.body or ""]), ticket):
+        trailers.append(f"Refs: {ticket}")
+    if trailers:
+        msg += ["-m", "\n".join(trailers)]
     r = git("commit", "-q", *msg)
     if r.returncode != 0:
         print(r.stdout + r.stderr, file=sys.stderr)

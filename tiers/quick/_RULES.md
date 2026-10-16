@@ -6,6 +6,8 @@ acts on it as it happens (stops the write or command, or loads the context); **a
 only this text holds it, so it
 depends on you. The checks live in `.ai/policy.py`; their messages quote the rule ID.
 Never bypass a check with `--no-verify`. If a check is wrong, say so and fix the check.
+Where the workspace has the WorkRealm GitHub workflow, every push runs the same checks again,
+so a commit that skipped the hooks is still caught.
 
 **Use the helpers.** `python .ai/wr.py` does each common step the way the checks accept it:
 `status`, `checkpoint`, `handoff`, and at higher tiers `note`, `source add`, `decide`, `open-item`,
@@ -46,12 +48,24 @@ Update it whenever the goal, the next step or a blocker changes, and before endi
 - Before finishing a response, `git status --porcelain` must be empty. The Claude Stop hook
   enforces it; in other tools it is on you.
 
+## Work on a ticket names it
+
+> **R-TICKET** · enforced by: git
+
+When the work belongs to a ticket, its branch carries the key:
+`python .ai/wr.py ticket start ABC-123 "short title"` creates `feat/ABC-123-short-title`. Every
+commit on it ends with a `Refs: ABC-123` trailer, which `python .ai/checkpoint.py` adds; the
+commit check warns (never blocks) when it is missing. A workspace made for one ticket
+(`wr new --ticket ABC-123`) treats every branch as that ticket's.
+
 ## Secrets never enter Git
 
 > **R-SECRETS** · enforced by: git
 
 Secrets live in `.env`, which is gitignored; `.env.example` carries the shape, never the values.
-Commits containing files that look like secrets are refused. If one is committed anyway:
+Commits containing files that look like secrets are refused, and so is a literal credential in
+`.mcp.json` or `.claude/settings.json`: those reference variables (`${GITHUB_PAT}`), which Claude
+Code reads from the environment it starts in. If one is committed anyway:
 **stop, do not push, rotate the secret.**
 
 ## Verify, don't recall

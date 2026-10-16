@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code status line: workspace, tier, branch, uncommitted, unpushed, open items, phase.
+"""Claude Code status line: workspace, tier, branch, ticket, uncommitted, unpushed, open items, phase.
 
 Configured in .claude/settings.json ("statusLine"). Reads the session JSON on stdin only
 to find the project; everything shown comes from git and the workspace files.
@@ -17,9 +17,12 @@ def main() -> int:
     except Exception:
         pass
     try:
-        from wr import git_summary, meta, open_items, phase
+        from wr import ROOT, active_ticket, git_summary, meta, open_items, phase
         m, g = meta(), git_summary()
         parts = [f"{m.get('name', '?')} [{m.get('tier', '?')}]", g["branch"]]
+        ticket = active_ticket(ROOT, m)
+        if ticket and ticket not in g["branch"]:
+            parts.append(ticket)
         parts.append(f"{g['dirty']} uncommitted" if g["dirty"] else "clean")
         if not g["remote"]:
             parts.append("no remote")
