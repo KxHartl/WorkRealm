@@ -349,8 +349,12 @@ def check_adr_format(root, meta, changes):
 
 
 def check_english(root, meta, changes):
+    """Everything is English except sources, raw data and, unless the workspace chose English
+    (lang "en"), the deliverables in reports/ and releases/."""
     lay = layout(meta)
     skip = [lay["sources"], lay["data_raw"]]
+    if meta.get("lang", "match") != "en":
+        skip += [lay["reports"], lay["releases"]]
     hits = []
     for status, path in changes:
         if status == "D" or any(under(path, s) for s in skip) or Path(path).suffix not in TEXT_EXT:

@@ -304,6 +304,18 @@ class TestGitPolicy(Base):
         self.assertCommitted(r)
         self.assertIn("R-LANG", r.stderr)
 
+    def test_deliverables_follow_the_workspace_language(self):
+        ws = self.new("g9")  # default: chat matches the user, deliverables in Croatian
+        self.assertIn("written in Croatian", (ws / "AGENTS.md").read_text(encoding="utf-8"))
+        write(ws / "reports" / "izvjestaj.md", "Zaključak: rizik je prihvatljiv.\n")
+        self.assertNotIn("R-LANG", commit(ws, "docs: draft report").stderr)
+        write(ws / "docs" / "notes" / "2026-10-16-findings.md", "Zaključak: rizik je prihvatljiv.\n")
+        self.assertIn("R-LANG", commit(ws, "docs: findings").stderr)  # notes stay English
+        en = self.new("g10", "--lang", "en")
+        self.assertIn("written in English", (en / "AGENTS.md").read_text(encoding="utf-8"))
+        write(en / "reports" / "report.md", "Zaključak.\n")
+        self.assertIn("R-LANG", commit(en, "docs: report").stderr)
+
 
 class TestRuleContract(unittest.TestCase):
     """Every rule declares its enforcement; every declared layer really exists at that tier."""

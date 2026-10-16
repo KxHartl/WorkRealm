@@ -17,9 +17,11 @@ so a commit that skipped the hooks is still caught.
 
 > **R-LANG** · enforced by: git
 
-{{CHAT_LANG}} **Documents, code, comments and commit messages:** English. The pre-commit check
-warns (never blocks) when non-English text is added outside `references/` and `data/raw/`; quoting a
-source verbatim is fine.
+{{CHAT_LANG}} **Deliverables** — what the work hands over, in `reports/` and `releases/` — are
+written in {{DOC_LANG}}. **Everything else is English:** code, comments, commit messages, notes,
+decisions, plans, `STATE.md` and these rules. File and folder names are ASCII kebab-case in either
+language. The pre-commit check warns (never blocks) when non-English text is added anywhere else
+than the deliverables, `references/` and `data/raw/`; quoting a source verbatim is fine.
 
 ## Context first
 
