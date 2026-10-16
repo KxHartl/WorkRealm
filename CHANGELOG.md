@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1 — 2026-10-16
+
+- **R-LANG simplified:** final outputs (`reports/`, `releases/`) are always Croatian and everything
+  else is English. There is no per-workspace document language any more; `--lang` sets only the
+  chat rule again, as before 0.8.0.
+
 ## 0.8.0 — 2026-10-16
 
 Language by role. Deliverables are written in the workspace's language; everything else stays English.

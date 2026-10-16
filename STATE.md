@@ -1,8 +1,8 @@
 # STATE — WorkRealm
 
-- **Version:** 0.8.0 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
+- **Version:** 0.8.1 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
 - **Owner:** KxHartl, who picks and approves each release
-- **Phase:** 0.8.0 (language by role) is done. Waiting for the owner's review.
+- **Phase:** 0.8.1 (language by role: final outputs Croatian, the rest English) is done. Waiting for the owner's review.
 - **Pairs with:** AgentBrain 2.6.0 (`15c62be`): work agents for the 0.5.0 layout, and the RAG MCP
   server that `--with rag` starts.
 
@@ -34,7 +34,7 @@ AgentBrain. The goals and the design are in `docs/DESIGN.md`.
 
 ## Next (see `docs/DESIGN.md`)
 
-1. The owner reviews 0.8.0. Proposed next, not yet approved: `adopt` must not overwrite another
+1. The owner reviews 0.8.1. Proposed next, not yet approved: `adopt` must not overwrite another
    tool's `.ai/` or hooks, and `doctor` reports tracked virtualenvs, build output and large files.
    Then, in an order the owner picks:
    - an on-demand `.ai/REFERENCE.md`;

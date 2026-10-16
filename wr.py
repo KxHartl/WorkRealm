@@ -78,8 +78,6 @@ CHAT_LANG = {
     "en": "**Chat:** English.",
     "hr": "**Chat:** Croatian.",
 }
-# The language of deliverables (reports/, releases/), from the same --lang. Everything else is English.
-DOC_LANG = {"match": "Croatian", "hr": "Croatian", "en": "English"}
 
 # Which .ai/policy.py checks run, per tier. Each tier adds; none removes or renames.
 CHECKS = {
@@ -360,8 +358,7 @@ def tier_meta(tier: str, meta: dict | None = None) -> dict:
 
 def context(meta: dict, tier: str | None = None) -> dict:
     return {"NAME": meta["name"], "DATE": meta.get("created", dt.date.today().isoformat()),
-            "TIER": tier or meta["tier"], "CHAT_LANG": CHAT_LANG[meta.get("lang", "match")],
-            "DOC_LANG": DOC_LANG[meta.get("lang", "match")], "WR_VERSION": VERSION}
+            "TIER": tier or meta["tier"], "CHAT_LANG": CHAT_LANG[meta.get("lang", "match")], "WR_VERSION": VERSION}
 
 
 def install_githooks(dest: Path) -> None:
@@ -1058,10 +1055,7 @@ def main(argv: list[str] | None = None) -> None:
     size.add_argument("--quick", action="store_true", help="hours to a day: rules, STATE, commit discipline")
     size.add_argument("--project", action="store_true", help="weeks to months: experiments, ADRs, releases")
     n.add_argument("--dir", help=f"parent folder (default: {ROOT.parent})")
-    n.add_argument("--lang", choices=sorted(CHAT_LANG), default="match",
-                   help="chat language and the language of deliverables (reports/, releases/). match (default): "
-                        "chat in the user's language, deliverables in Croatian; hr: both Croatian; en: both English. "
-                        "Code, commits, notes and decisions are always English")
+    n.add_argument("--lang", choices=sorted(CHAT_LANG), default="match", help="chat language rule (default: match)")
     rem = n.add_mutually_exclusive_group()
     rem.add_argument("--remote", dest="remote", action="store_true", default=None,
                      help="create a private GitHub repo (default for task/project)")
