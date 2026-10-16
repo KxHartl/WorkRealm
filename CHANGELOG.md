@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.0 — 2026-10-16
+
+Language by role. Deliverables are written in the workspace's language; everything else stays English.
+
+- **R-LANG** now separates what the work hands over (`reports/`, `releases/`) from everything else.
+  Deliverables are written in the workspace's language; code, comments, commits, notes,
+  decisions, plans and `STATE.md` stay English, and file names are ASCII.
+- **`--lang`** sets both the chat and the deliverable language. The default (`match`) keeps the chat
+  in the user's language and writes deliverables in Croatian; `hr` makes both Croatian; `en`
+  makes both English.
+- The pre-commit check no longer warns about Croatian text in the deliverables, unless the workspace
+  chose English. A workspace picks up the new rule with `wr doctor --fix` or `wr upgrade`.
+
 ## 0.7.0 — 2026-10-16
 
 Integrations: the tools a workspace talks to, the ticket it serves, and CI that runs its checks.

@@ -109,8 +109,15 @@ wr doctor [--fix] [--ci] [--path WORKSPACE]
 wr adopt PATH [--tier quick|task|project] [--dry-run]
 ```
 
-- `--lang` sets the chat-language rule. `match` (the default) means reply in the language the
-  user writes in. Documents, code and commits are always English.
+- `--lang` sets two things: the chat language and the language of **deliverables**
+  (`reports/`, `releases/`). Everything else (code, comments, commits, notes, decisions, plans,
+  `STATE.md`) is always English, and file names are ASCII.
+
+  | `--lang` | Chat | Deliverables |
+  |---|---|---|
+  | `match` (default) | the user's language | Croatian |
+  | `hr` | Croatian | Croatian |
+  | `en` | English | English |
 - `upgrade` adds the missing files, rewrites the generated block of `AGENTS.md` (your
   *Project-specific rules* section is kept), the `hooks` key of `.claude/settings.json` and the
   tool-owned files in `.ai/`, `.githooks/` and `.claude/skills/`. Your own files are never overwritten.

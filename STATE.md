@@ -1,8 +1,8 @@
 # STATE — WorkRealm
 
-- **Version:** 0.7.0 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
+- **Version:** 0.8.0 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
 - **Owner:** KxHartl, who picks and approves each release
-- **Phase:** 0.7.0 (integrations, tickets, CI) is done. Waiting for the owner's review.
+- **Phase:** 0.8.0 (language by role) is done. Waiting for the owner's review.
 - **Pairs with:** AgentBrain 2.6.0 (`15c62be`): work agents for the 0.5.0 layout, and the RAG MCP
   server that `--with rag` starts.
 
@@ -30,11 +30,13 @@ AgentBrain. The goals and the design are in `docs/DESIGN.md`.
   `plan new`, `adr new`, `exp new`, `run new`, `release cut`, `status`, `handoff`) and 10 skills
   that wrap them.
 - **AI marking:** applied to subagent work only, set by the hook from `agent_id`.
-- **Tests:** 61 end-to-end tests, with generic adopt fixtures (a code repo, a research folder). AgentBrain has `tests/test_sync.py` and `tests/test_rag_mcp.py` (in its CI).
+- **Tests:** 62 end-to-end tests, with generic adopt fixtures (a code repo, a research folder). AgentBrain has `tests/test_sync.py` and `tests/test_rag_mcp.py` (in its CI).
 
 ## Next (see `docs/DESIGN.md`)
 
-1. The owner reviews 0.7.0. Then, in an order the owner picks:
+1. The owner reviews 0.8.0. Proposed next, not yet approved: `adopt` must not overwrite another
+   tool's `.ai/` or hooks, and `doctor` reports tracked virtualenvs, build output and large files.
+   Then, in an order the owner picks:
    - an on-demand `.ai/REFERENCE.md`;
    - a devcontainer / GitHub-template path;
    - the RAG server over HTTP for other devices (AgentBrain already has `--http`; the laptop

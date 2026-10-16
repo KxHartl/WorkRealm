@@ -72,6 +72,8 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 - **0.7.0:** integrations as `.mcp.json` entries (`--with github,rag`, `wr integrate`), tickets
   (`--ticket`, `ticket start`, `Refs:` trailers, R-TICKET), and a GitHub workflow that re-runs the
   checks on every pushed commit.
+- **0.8.0:** language by role. Deliverables (`reports/`, `releases/`) are in the workspace's
+  language (`--lang`, Croatian by default); everything else is English.
 
 ## Integration choices (0.7.0)
 
