@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.0 — 2026-10-16
+
+Integrations: the tools a workspace talks to, the ticket it serves, and CI that runs its checks.
+Needs AgentBrain 2.6.0 for `--with rag`.
+
+- **`wr new --with github,rag`** and **`wr integrate github,rag`** write `.mcp.json` entries
+  (other servers and keys are kept) and add what they need to `.env.example`:
+  - `github`: GitHub's remote MCP server, limited to the repos, issues, pull requests and actions
+    toolsets; the token is `${GITHUB_PAT}`, read from the environment Claude Code starts in;
+  - `rag`: AgentBrain's RAG server over stdio, started by `.ai/rag_server.py` from the workspace
+    root, so ingest stays inside the workspace and chunks are tagged with its name.
+
+  `wr doctor` checks the entries (`--fix` restores them) and, locally, that the variables are set
+  and the RAG server exists.
+- **Tickets (R-TICKET).** `wr new --ticket ABC-123` records the workspace's ticket in
+  `.workrealm.json` and `STATE.md`; `python .ai/wr.py ticket start ABC-123 "title"` creates
+  `feat/ABC-123-title`. `checkpoint.py` adds a `Refs: ABC-123` trailer, the commit check warns
+  (never blocks) when it is missing, and the status and status line show the ticket.
+- **CI.** Task and project workspaces get `.github/workflows/workrealm.yml`, a tool file that
+  runs `python .ai/policy.py ci` on every push and pull request. It re-checks each pushed commit's
+  message and write-once paths, so a commit that skipped the hooks (`--no-verify`, a web editor,
+  another machine) still fails, then checks the whole tree for secrets. A new branch is checked
+  only for the commits no other branch has.
+- **Secrets in config files.** A literal credential in `.mcp.json` or `.claude/settings.json`
+  (`Bearer …`, a GitHub token, a `"token": "…"` value) is now refused at commit, not only reported
+  by `wr doctor`.
+
 ## 0.6.0 — 2026-10-12
 
 Maintenance: keep a workspace's guard-rails working, and bring any existing folder in.

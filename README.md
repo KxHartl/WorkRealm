@@ -9,6 +9,7 @@ Repository: <https://github.com/KxHartl/WorkRealm> (private)
 python wr.py new MyTask              # task tier — the default, no flag
 python wr.py new QuickFix --quick    # quick tier
 python wr.py new BigThing --project  # project tier
+python wr.py new Fix --with github,rag --ticket ABC-123   # integrations, the ticket it serves
 ```
 
 Workspaces are created next to this folder (`C:\Projects\<name>`) unless `--dir` says otherwise.
@@ -100,6 +101,8 @@ add the mark. The git check refuses a commit that has only one of the two.
 
 ```
 wr new NAME [--quick | --project] [--dir PARENT] [--lang match|en|hr] [--remote | --no-remote]
+           [--with github,rag] [--ticket KEY]
+wr integrate github,rag [--path WORKSPACE]
 wr upgrade --to task|project [--path WORKSPACE]
 wr sync [--check] [--path WORKSPACE]
 wr doctor [--fix] [--ci] [--path WORKSPACE]
@@ -139,6 +142,22 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
   `--dry-run` shows all of this and writes nothing. A folder without Git first gets a baseline
   commit of what is already there.
 
+- `--with` / `integrate` add MCP servers to `.mcp.json` (your own servers are kept):
+
+  | Name | Server | Needs |
+  |---|---|---|
+  | `github` | GitHub's remote server: repos, issues, pull requests, actions | `GITHUB_PAT` in the environment |
+  | `rag` | AgentBrain's RAG server (search and ingest the shared corpus), started by `.ai/rag_server.py` | AgentBrain 2.6.0 |
+
+  Claude Code reads `${VAR}` from the environment it starts in, not from `.env`, and asks once
+  whether to trust the servers. `doctor` checks the entries and, locally, the variables.
+- `--ticket KEY` records the ticket the workspace serves. Inside any workspace,
+  `python .ai/wr.py ticket start KEY "title"` creates `feat/KEY-title`; `checkpoint.py` adds
+  `Refs: KEY` to every commit on it, and the commit check warns when it is missing.
+- Task and project workspaces get `.github/workflows/workrealm.yml`: on every push and pull
+  request it runs `python .ai/policy.py ci`, which re-checks the pushed commits (a commit made
+  with `--no-verify` fails there) and the whole tree for secrets. It needs no secrets.
+
 **After cloning a workspace**, run `wr doctor --fix` once (or `git config core.hooksPath .githooks`).
 The hooks are versioned, but Git does not turn on a hooks path by itself.
 
@@ -160,4 +179,5 @@ Run the tests: `python -m unittest discover tests`
 
 See [`docs/DESIGN.md`](docs/DESIGN.md). Next up:
 
-- **0.7.0**: integrations (`--with github,jira,m365,rag`, `--ticket`, CI that runs the checks on GitHub).
+- an on-demand `.ai/REFERENCE.md`, so the always-loaded `AGENTS.md` stays short;
+- a devcontainer / GitHub-template path for setup without a local install.

@@ -11,7 +11,8 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 3. **Enforced:** naming, language, decisions, commits, evidence.
 4. **Seamless and intuitive.** Familiar layout; the right way is the easy way.
 5. **Shared specialists.** Agents and skills in AgentBrain, synced per tier.
-6. **Integrations** with GitHub, Jira / Confluence / Azure DevOps, Microsoft 365, local RAG.
+6. **Integrations** with the tools the work runs through: GitHub, the shared document corpus
+   (RAG), tickets and CI.
 
 ## Failure modes it is built against
 
@@ -29,12 +30,14 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 | A rule is described but not enforced | The rule-contract test fails when a tag claims a layer that does not exist |
 | Agents mislabel their own work | AI marking is set by the hook from `agent_id`, never by the agent |
 | Session context is lost | SessionStart puts `STATE.md` and the status into context, and again after compaction |
+| Hooks are skipped (`--no-verify`, a web editor, another machine) | The GitHub workflow re-runs the checks on every pushed commit |
+| Credentials end up in shared config | `.mcp.json` references `${VAR}`; a literal token is refused at commit |
 
 ## Principles
 
 1. **Layers, strongest first:** Git, then harness hooks, then one-command helpers, then prose.
 2. **One policy core.** `.ai/policy.py` holds every check; the git hooks, Claude hooks,
-   `checkpoint.py` and (later) CI all call it.
+   `checkpoint.py` and the GitHub workflow all call it.
 3. **Configuration is data.** Layout, write-once paths, zones and naming live in
    `.workrealm.json`. Tiers add entries and never rename them.
 4. **Tiers are strict extensions.** `quick` ⊂ `task` ⊂ `project`; `wr upgrade` only adds.
@@ -66,13 +69,26 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 - **0.6.0:** `wr doctor [--fix] [--ci]` and `wr adopt [--dry-run]`. Write-once paths, zones and
   naming are defined per role, and templates and rule texts follow the workspace's own layout.
 
+- **0.7.0:** integrations as `.mcp.json` entries (`--with github,rag`, `wr integrate`), tickets
+  (`--ticket`, `ticket start`, `Refs:` trailers, R-TICKET), and a GitHub workflow that re-runs the
+  checks on every pushed commit.
+
+## Integration choices (0.7.0)
+
+- **GitHub:** GitHub's own remote server (`api.githubcopilot.com/mcp/`), toolsets limited to
+  repos, issues, pull requests and actions. Claude Code expands `${GITHUB_PAT}` from its
+  environment; it does not read `.env`.
+- **RAG:** AgentBrain's server, run locally over stdio. The main corpus stays on the server; this
+  machine embeds with the model that built it, because that is where the GPU is. The launcher in
+  `.ai/` finds AgentBrain the same way `wr sync` does.
+- **CI runs the policy core, not `wr doctor`.** A workspace does not carry the generator, and the
+  checks that matter on a push are the commit checks a skipped hook did not run.
+- **Left out on purpose:** Jira, Confluence, Azure DevOps and Microsoft 365. A ticket key is
+  plain text that needs no tracker; Office files are handled locally, without a cloud server.
+  Personal mail and calendars belong to account-level connectors, not to a workspace.
+
 ## Next
 
-- **0.7.0, integrations:**
-  - `wr new --with github,jira,m365,rag` writes `.mcp.json` from templates. Secrets only come from
-    environment variables, and the server packages are verified against current docs.
-  - `--ticket KEY` records the ticket and names the branches after it.
-  - A GitHub workflow runs `wr doctor --ci` on every push.
 - **Later:**
   - an on-demand `.ai/REFERENCE.md`, so the always-loaded `AGENTS.md` stays short;
   - a devcontainer / GitHub-template path for setup without a local install.
