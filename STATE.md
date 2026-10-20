@@ -1,8 +1,8 @@
 # STATE — WorkRealm
 
-- **Version:** 0.8.1 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
+- **Version:** 0.9.0 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
 - **Owner:** KxHartl, who picks and approves each release
-- **Phase:** 0.8.1 (language by role: final outputs Croatian, the rest English) is done. Waiting for the owner's review.
+- **Phase:** 0.9.0 (safe adopt, doctor hygiene, GitHub template path) is done. Waiting for the owner's review.
 - **Pairs with:** AgentBrain 2.6.0 (`15c62be`): work agents for the 0.5.0 layout, and the RAG MCP
   server that `--with rag` starts.
 
@@ -14,9 +14,10 @@ AgentBrain. The goals and the design are in `docs/DESIGN.md`.
 
 ## What exists
 
-- **Commands:** `wr new` (quick / task / project, `--with`, `--ticket`), `wr integrate`,
+- **Commands:** `wr new` (quick / task / project, `--with`, `--ticket`, `--template`), `wr integrate`,
   `wr upgrade` (additive), `wr sync [--check]` (AgentBrain), `wr doctor [--fix] [--ci]`, and
-  `wr adopt PATH [--dry-run]` (any folder, moves nothing).
+  `wr adopt PATH [--dry-run]` (any folder, moves nothing, overwrites no other tool's files,
+  keeps the repo's own git hooks running).
 - **Integrations:** `.mcp.json` entries for `github` (remote server, `${GITHUB_PAT}`) and `rag`
   (AgentBrain over stdio via `.ai/rag_server.py`). Tickets: `ticket start`, `Refs:` trailers,
   R-TICKET (warns). CI: `.github/workflows/workrealm.yml` runs `policy.py ci` (task and up).
@@ -26,25 +27,25 @@ AgentBrain. The goals and the design are in `docs/DESIGN.md`.
   workspace, so adopted folders keep their own names.
 - **Policy core:** `.ai/policy.py`, run by the git hooks (every tool) and by the Claude hooks
   `session_start`, `checkpoint_gate`, `bash_guard`, `protect_paths` and `zone_guard`.
-- **Helpers:** `.ai/wr.py` (`ticket start`, `note`, `source add|promote`, `decide`, `open-item`, `close-item`,
+- **Helpers:** `.ai/wr.py` (`init`, `ticket start`, `note`, `source add|promote`, `decide`, `open-item`, `close-item`,
   `plan new`, `adr new`, `exp new`, `run new`, `release cut`, `status`, `handoff`) and 10 skills
   that wrap them.
 - **AI marking:** applied to subagent work only, set by the hook from `agent_id`.
-- **Tests:** 62 end-to-end tests, with generic adopt fixtures (a code repo, a research folder). AgentBrain has `tests/test_sync.py` and `tests/test_rag_mcp.py` (in its CI).
+- **Tests:** 69 end-to-end tests, with generic adopt fixtures (a code repo, a research folder). AgentBrain has `tests/test_sync.py` and `tests/test_rag_mcp.py` (in its CI).
 
 ## Next (see `docs/DESIGN.md`)
 
-1. The owner reviews 0.8.1. Proposed next, not yet approved: `adopt` must not overwrite another
-   tool's `.ai/` or hooks, and `doctor` reports tracked virtualenvs, build output and large files.
-   Then, in an order the owner picks:
+1. The owner reviews 0.9.0, and creates the template repos when wanted
+   (`wr new workrealm-task --template`, one per tier that is used). Then, in an order the owner picks:
    - an on-demand `.ai/REFERENCE.md`;
-   - a devcontainer / GitHub-template path;
+   - a devcontainer (Codespaces) on top of the template path;
    - the RAG server over HTTP for other devices (AgentBrain already has `--http`; the laptop
      needs autostart, a firewall rule and a token), when the owner's other project needs it.
 
 ## Notes
 
-- **`core.hooksPath` is local config.** A fresh clone needs `wr doctor --fix` (or `git config core.hooksPath .githooks`).
+- **`core.hooksPath` is local config.** A fresh clone needs `python .ai/wr.py init` once (or `wr doctor --fix`);
+  the session status says when the hooks are off.
 - **Pushes fail silently.** The post-commit push runs in the background with its output thrown
   away, so a failed push makes no noise. `wr doctor` reports unpushed commits, and `--fix` pushes them.
 - **Keep tool files ASCII-safe.** Hook messages stay ASCII, and the Croatian letters in `policy.py`

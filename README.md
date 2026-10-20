@@ -101,7 +101,7 @@ add the mark. The git check refuses a commit that has only one of the two.
 
 ```
 wr new NAME [--quick | --project] [--dir PARENT] [--lang match|en|hr] [--remote | --no-remote]
-           [--with github,rag] [--ticket KEY]
+           [--with github,rag] [--ticket KEY] [--template]
 wr integrate github,rag [--path WORKSPACE]
 wr upgrade --to task|project [--path WORKSPACE]
 wr sync [--check] [--path WORKSPACE]
@@ -126,11 +126,15 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
   - `core.hooksPath` (after a fresh clone, commits are not checked until it is set);
   - remote and unpushed commits (a failed background push shows up here);
   - work tree, the AgentBrain pin, tracked secrets (including literal tokens in `.mcp.json`);
+  - hygiene: tracked virtualenvs, build output (`node_modules/`, `__pycache__/`, `build/`, ...)
+    and files over 10 MB, with the command that untracks them;
   - a whole-tree policy pass that lists existing violations without blocking them.
 
   `--fix` repairs what is safe to repair: hooks path, tool files, settings, rules block, sync, and
-  pushing a branch that has no upstream. It never touches secrets; they need rotating. `--ci` skips
-  the checks of local state and exits 1 on a failure.
+  pushing a branch that has no upstream. It never touches secrets (they need rotating), never
+  untracks files, and never takes over a `core.hooksPath` another tool set: that is reported
+  until its hooks call `.githooks/pre-commit` and `.githooks/commit-msg`. `--ci` skips the checks
+  of local state and exits 1 on a failure.
 - `adopt` brings an existing folder under WorkRealm and **moves nothing**:
   - it maps the folder's own names onto the roles (`literature/` as sources, `dist/` as releases,
     ADRs kept in `decisions/`, and so on); a folder counts only if it holds tracked files, so
@@ -139,10 +143,15 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
     the existing style, and relaxes the rest;
   - it adds the rules block to an existing `AGENTS.md` without touching your text;
   - it makes `CLAUDE.md` and `GEMINI.md` import it;
-  - it reports what doesn't fit.
+  - it reports what doesn't fit, including tracked virtualenvs, build output and large files;
+  - it **overwrites nothing of another tool's**: if `.ai/`, `.githooks/`, `.claude/skills/` or the
+    workflow already hold a file that is not WorkRealm's, it lists the conflict and stops before
+    writing anything;
+  - the repository's own hooks in `.git/hooks` keep running: WorkRealm's hooks call the one of the
+    same name, and any other gets a forwarder in `.githooks/`.
 
   `--dry-run` shows all of this and writes nothing. A folder without Git first gets a baseline
-  commit of what is already there.
+  commit of what is already there; its virtualenvs and build output are ignored before that.
 
 - `--with` / `integrate` add MCP servers to `.mcp.json` (your own servers are kept):
 
@@ -160,8 +169,15 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
   request it runs `python .ai/policy.py ci`, which re-checks the pushed commits (a commit made
   with `--no-verify` fails there) and the whole tree for secrets. It needs no secrets.
 
-**After cloning a workspace**, run `wr doctor --fix` once (or `git config core.hooksPath .githooks`).
-The hooks are versioned, but Git does not turn on a hooks path by itself.
+- `--template` makes the new workspace a GitHub template repository. A new workspace then needs
+  no WorkRealm on the machine: "Use this template" on GitHub (or
+  `gh repo create NAME --template OWNER/REPO --private --clone`), then, in the clone,
+  `python .ai/wr.py init`. It names the workspace after its folder (or `--name`), dates it, turns
+  the git hooks on and commits. One template per tier is enough; keep it current with
+  `wr doctor --fix` in the template repo.
+
+**After cloning a workspace**, run `python .ai/wr.py init` once. The hooks are versioned, but Git
+does not turn on a hooks path by itself; the session status says when they are off.
 
 ## Layout of this repo
 
@@ -182,4 +198,4 @@ Run the tests: `python -m unittest discover tests`
 See [`docs/DESIGN.md`](docs/DESIGN.md). Next up:
 
 - an on-demand `.ai/REFERENCE.md`, so the always-loaded `AGENTS.md` stays short;
-- a devcontainer / GitHub-template path for setup without a local install.
+- a devcontainer, for setup in a browser (Codespaces) on top of the template path.

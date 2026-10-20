@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.0 — 2026-10-20
+
+Safe adoption, repository hygiene, and workspaces from a GitHub template.
+
+- **`adopt` overwrites nothing of another tool's.** When `.ai/`, `.githooks/`, `.claude/skills/`
+  or the workflow already hold a file that is not WorkRealm's, adopt lists the conflict and stops
+  before writing anything (`--dry-run` shows it too).
+- **The repository's own git hooks keep running.** `core.hooksPath = .githooks` silences
+  `.git/hooks`, so WorkRealm's `pre-commit`, `commit-msg` and `post-commit` now call the local hook
+  of the same name, and adopt writes a forwarder in `.githooks/` for any other one (`pre-push`, ...).
+- **`doctor` respects another tool's hooks path.** A `core.hooksPath` set by another tool is
+  reported, never taken over by `--fix`, and accepted once its hooks call `.githooks/`.
+- **Hygiene.** `doctor` (and `adopt`) report tracked virtualenvs, build output and files over
+  10 MB, with the command that untracks them; nothing is removed automatically. Adopting a folder
+  without Git ignores its virtualenvs and build output before the baseline commit.
+- **GitHub template path.** `wr new NAME --template` creates the workspace as a GitHub template
+  repository. "Use this template" (or `gh repo create --template`) and then
+  `python .ai/wr.py init` in the clone give a new workspace its own name and date and turn the
+  hooks on, with no WorkRealm installed. GitHub's "Initial commit" passes the message check.
+- **`python .ai/wr.py init`** is also what every fresh clone runs to turn the hooks on; the status
+  (and so every session start) says when they are off.
+
 ## 0.8.1 — 2026-10-16
 
 - **R-LANG simplified:** final outputs (`reports/`, `releases/`) are always Croatian and everything

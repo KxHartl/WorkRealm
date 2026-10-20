@@ -22,7 +22,7 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 | Agent harnesses differ; only one has hooks | The binding layer is Git (`.githooks/`, `core.hooksPath`); Claude hooks are a second layer |
 | A guard that always fires stops being read | Checks are silent on the happy path; a test proves a fresh workspace passes with no output |
 | Work exists only on one disk | `post-commit` pushes every commit; the Stop hook refuses to end with a dirty tree |
-| Hooks in `.git/hooks` vanish on clone | Hooks are versioned in `.githooks/`; `wr doctor --fix` restores `core.hooksPath` |
+| Hooks in `.git/hooks` vanish on clone | Hooks are versioned in `.githooks/`; `python .ai/wr.py init` turns them on, and the session status says when they are off |
 | A background push fails and nobody notices | `wr doctor` reports commits that are not on the remote and pushes them with `--fix` |
 | Existing work does not fit a template | `wr adopt` maps the folder's own names onto roles, keeps conventions it already follows, moves nothing |
 | Evidence gets edited | Write-once paths, checked at commit time (any tool) and at write time (Claude) |
@@ -32,6 +32,9 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 | Session context is lost | SessionStart puts `STATE.md` and the status into context, and again after compaction |
 | Hooks are skipped (`--no-verify`, a web editor, another machine) | The GitHub workflow re-runs the checks on every pushed commit |
 | Credentials end up in shared config | `.mcp.json` references `${VAR}`; a literal token is refused at commit |
+| Adopting a repo breaks the tools it already has | `adopt` stops before overwriting another tool's files; the repo's own git hooks keep running; doctor never takes over another tool's hooks path |
+| Virtualenvs, build output and huge files land in history | `doctor` and `adopt` report them; a folder without Git ignores them before its baseline commit |
+| Starting needs the generator installed | A workspace can be a GitHub template; `python .ai/wr.py init` finishes it in the clone |
 
 ## Principles
 
@@ -74,6 +77,8 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
   checks on every pushed commit.
 - **0.8.0 / 0.8.1:** language by role. Final outputs (`reports/`, `releases/`) are Croatian;
   everything else is English.
+- **0.9.0:** adopt overwrites nothing of another tool's; doctor reports tracked virtualenvs, build
+  output and large files; the GitHub template path (`wr new --template`, `.ai/wr.py init`).
 
 ## Integration choices (0.7.0)
 
@@ -93,4 +98,5 @@ This replaces the earlier plan (in Git history at `docs/PLAN.md`).
 
 - **Later:**
   - an on-demand `.ai/REFERENCE.md`, so the always-loaded `AGENTS.md` stays short;
-  - a devcontainer / GitHub-template path for setup without a local install.
+  - a devcontainer, for setup in a browser (Codespaces) on top of the template path;
+  - the RAG server over HTTP for other devices, when the owner's other project needs it.
