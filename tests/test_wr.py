@@ -694,6 +694,25 @@ class TestDoctor(Base):
         self.assertEqual(git(ws, "config", "core.hooksPath").strip(), ".githooks")
         self.assertEqual(doctor(ws).returncode, 0)
 
+    def test_tracked_virtualenvs_build_output_and_large_files_are_reported(self):
+        ws = self.new("d8")
+        self.assertTrue(row(doctor(ws).stdout, "hygiene").startswith("OK"))
+        write(ws / ".venv" / "pyvenv.cfg", "home = /usr/bin\n")
+        write(ws / ".venv" / "lib" / "site.py", "x\n")
+        write(ws / "web" / "node_modules" / "left-pad" / "index.js", "x\n")
+        write(ws / "src" / "mod.cpython-312.pyc", "x")
+        (ws / "big.bin").write_bytes(b"\0" * (11 * 1024 * 1024))
+        subprocess.run(["git", "add", "-Af"], cwd=ws, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "--no-verify", "-m", "chore: everything"], cwd=ws)
+        r = doctor(ws, "--fix")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        report = r.stdout.split("hygiene", 1)[1].split("\nOK", 1)[0]
+        for expected in (".venv/ (a virtualenv), 2 file(s)", "web/node_modules/ (build output)", "*.pyc",
+                         "big.bin (11 MB)", "git rm -r --cached"):
+            self.assertIn(expected, report)
+        self.assertNotIn("site.py", report)
+        self.assertIn(".venv/lib/site.py", git(ws, "ls-files"))  # reported, never removed
+
     def test_another_tools_hooks_path_is_reported_never_taken_over(self):
         ws = self.new("d7")
         write(ws / ".husky" / "pre-commit", "#!/bin/sh\nnpm test\n")
@@ -869,6 +888,27 @@ class TestAdopt(Base):
                               cwd=repo, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue((repo / ".git" / "own-pre-commit-ran").exists())
+
+    def test_build_output_is_reported_in_a_repo_and_ignored_in_a_new_baseline(self):
+        repo = fixture_code_repo(self.tmp)
+        write(repo / "node_modules" / "x" / "index.js", "x\n")
+        for args in (["add", "-A"], ["commit", "-q", "-m", "chore: deps"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+        self.assertIn("node_modules/ (build output)", run_wr("adopt", str(repo), "--dry-run").stdout)
+
+        folder = fixture_research_folder(self.tmp)
+        write(folder / "analysis" / ".venv" / "pyvenv.cfg", "home = /usr/bin\n")
+        write(folder / "analysis" / ".venv" / "lib" / "site.py", "x\n")
+        write(folder / "analysis" / "build" / "out.o", "x")
+        r = run_wr("adopt", str(folder))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ignore = (folder / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("analysis/.venv/", ignore)
+        self.assertIn("analysis/build/", ignore)
+        baseline = git(folder, "ls-files")
+        self.assertNotIn(".venv", baseline)
+        self.assertNotIn("out.o", baseline)
+        self.assertIn("scratch/misc.txt", baseline)
 
     def test_dirty_repo_is_refused(self):
         repo = fixture_code_repo(self.tmp)

@@ -632,7 +632,7 @@ class Doctor:
                   self.check_integrations]
         if not self.ci:  # local state a fresh CI checkout does not have
             checks += [self.check_hooks, self.check_remote, self.check_tree, self.check_brain]
-        checks += [self.check_secrets, self.check_policy]
+        checks += [self.check_secrets, self.check_hygiene, self.check_policy]
         for check in checks:
             check()
         width = max(len(n) for _, n, _ in self.rows)
@@ -820,6 +820,72 @@ class Doctor:
             self.report("OK", "policy", "every tracked file passes the checks")
 
 
+    def check_hygiene(self):
+        tracked = [t for t in git(self.dest, "ls-files", "-z", check=False).stdout.split("\0") if t]
+        found = hygiene(self.dest, tracked, self.lay)
+        if found:
+            self.report("WARN", "hygiene", "\n".join(found))
+        else:
+            self.report("OK", "hygiene", f"no virtualenvs, build output or files over {LARGE_MB} MB tracked")
+
+
+# Tracked by mistake: these belong in .gitignore, not in history (every clone carries them).
+BUILD_DIRS = {"node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+              ".ipynb_checkpoints", ".next", "build", "target"}
+LARGE_MB = 10  # GitHub warns at 50 MB and refuses 100 MB
+
+
+def hygiene(dest: Path, tracked: list[str], lay: dict) -> list[str]:
+    """Virtualenvs, build output and large files that are tracked. Folders that are one of the
+    workspace's roles are never build output, whatever their name."""
+    roles = {v.split("/", 1)[0] for v in lay.values()}
+    venvs = {t.rsplit("/", 1)[0] if "/" in t else "." for t in tracked if t.rsplit("/", 1)[-1] == "pyvenv.cfg"}
+    groups: Counter = Counter()
+    for t in tracked:
+        venv = next((v for v in venvs if v == "." or t.startswith(v + "/")), None)
+        if venv and venv != ".":
+            groups[f"{venv}/ (a virtualenv)"] += 1
+            continue
+        parts = t.split("/")
+        hit = next((i for i, p in enumerate(parts[:-1]) if p in BUILD_DIRS or p.endswith(".egg-info")), None)
+        if hit is not None and parts[0] not in roles:
+            groups["/".join(parts[:hit + 1]) + "/ (build output)"] += 1
+        elif t.endswith((".pyc", ".pyo")):
+            groups["*.pyc (build output)"] += 1
+    out = [f"tracked: {g}, {n} file(s). Untrack and ignore it: git rm -r --cached <path>, then add it to "
+           ".gitignore" for g, n in sorted(groups.items())]
+    large = []
+    for t in tracked:
+        try:
+            size = (dest / t).stat().st_size
+        except OSError:
+            continue
+        if size > LARGE_MB * 1024 * 1024:
+            large.append(f"{t} ({size / 1024 / 1024:.0f} MB{', GitHub refuses it' if size > 100 * 1024 * 1024 else ''})")
+    if large:
+        out.append(f"tracked files over {LARGE_MB} MB: {', '.join(large)}. Every clone carries them for good: "
+                   "use Git LFS or keep them outside Git")
+    return out
+
+
+def untracked_junk(dest: Path, lay: dict) -> list[str]:
+    """Virtualenvs and build output in a folder that has no Git yet, as .gitignore lines, so the
+    baseline commit does not record them."""
+    roles = {v.split("/", 1)[0] for v in lay.values()}
+    out = []
+    for root, dirs, files in os.walk(dest):
+        rel = Path(root).relative_to(dest).as_posix()
+        if Path(root).name == "__pycache__":  # already ignored everywhere by GITIGNORE_BLOCK
+            dirs.clear()
+        elif rel != "." and ("pyvenv.cfg" in files or Path(root).name in BUILD_DIRS
+                           or Path(root).name.endswith(".egg-info")) and rel.split("/")[0] not in roles:
+            out.append(rel + "/")
+            dirs.clear()
+        else:
+            dirs[:] = [d for d in dirs if d != ".git"]
+    return out
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     sys.exit(Doctor(Path(args.path).resolve(), fix=args.fix, ci=args.ci).run())
 
@@ -953,6 +1019,7 @@ def misfits(dest: Path, meta: dict, tracked: list[str]) -> list[str]:
     for d in sorted(p.name for p in dest.iterdir() if p.is_dir()):
         if not d.startswith(".") and d not in used and d not in IGNORED_DIRS:
             out.append(f"{d}/: not one of the workspace's roles; kept as it is and not checked")
+    out += hygiene(dest, tracked, lay) if (dest / ".git").exists() else []
     hooks = git(dest, "config", "core.hooksPath", check=False).stdout.strip()
     if hooks and hooks != HOOKS_PATH:
         out.append(f"core.hooksPath is already {hooks}: WorkRealm's git hooks are NOT installed. Chain them "
@@ -960,7 +1027,7 @@ def misfits(dest: Path, meta: dict, tracked: list[str]) -> list[str]:
     return out
 
 
-GITIGNORE_BLOCK = ["# WorkRealm: secrets and per-machine files", ".env", "*.pem", "*.key", "id_rsa*",
+GITIGNORE_BLOCK = ["# WorkRealm: secrets, per-machine files and build output", ".env", "*.pem", "*.key", "id_rsa*",
                    ".claude/settings.local.json", "__pycache__/", "*conflicted copy*"]
 # core.hooksPath = .githooks silences .git/hooks. WorkRealm's own hooks call the local hook of
 # the same name; any other local hook gets a forwarder, so `adopt` switches nothing off.
@@ -1035,7 +1102,7 @@ def cmd_adopt(args: argparse.Namespace) -> None:
                    else "+ AGENTS.md")
     gi = dest / ".gitignore"
     have = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
-    gi_add = [ln for ln in GITIGNORE_BLOCK[1:] if ln not in have]
+    gi_add = [ln for ln in GITIGNORE_BLOCK[1:] + ([] if is_repo else untracked_junk(dest, lay)) if ln not in have]
     if gi_add:
         changed.append(f"{'~' if gi.exists() else '+'} .gitignore (adds {', '.join(gi_add)})")
     changed.append(f"{'~' if (dest / '.claude' / 'settings.json').exists() else '+'} .claude/settings.json "
