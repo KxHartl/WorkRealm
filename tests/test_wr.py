@@ -694,6 +694,18 @@ class TestDoctor(Base):
         self.assertEqual(git(ws, "config", "core.hooksPath").strip(), ".githooks")
         self.assertEqual(doctor(ws).returncode, 0)
 
+    def test_another_tools_hooks_path_is_reported_never_taken_over(self):
+        ws = self.new("d7")
+        write(ws / ".husky" / "pre-commit", "#!/bin/sh\nnpm test\n")
+        git(ws, "config", "core.hooksPath", ".husky")
+        fixed = doctor(ws, "--fix")
+        self.assertEqual(fixed.returncode, 1)
+        self.assertIn("another tool's", row(fixed.stdout, "git hooks"))
+        self.assertEqual(git(ws, "config", "core.hooksPath").strip(), ".husky")
+        write(ws / ".husky" / "pre-commit", '#!/bin/sh\nnpm test\n.githooks/pre-commit "$@"\n')
+        write(ws / ".husky" / "commit-msg", '#!/bin/sh\n.githooks/commit-msg "$@"\n')
+        self.assertTrue(row(doctor(ws).stdout, "git hooks").startswith("OK"))
+
     def test_tool_drift_settings_and_rules_are_repaired(self):
         ws = self.new("d3", "--project")
         original = (ws / ".ai" / "policy.py").read_text(encoding="utf-8")
@@ -823,6 +835,40 @@ class TestAdopt(Base):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(doctor(repo).returncode, 0)
         self.assertNotEqual(run_wr("adopt", str(repo)).returncode, 0)  # already a workspace
+
+    def test_another_tools_files_stop_adopt_before_anything_is_written(self):
+        repo = fixture_code_repo(self.tmp)
+        write(repo / ".ai" / "policy.py", "# another tool's policy\n")
+        write(repo / ".githooks" / "pre-commit", "#!/bin/sh\nnpm test\n")
+        for args in (["add", "-A"], ["commit", "-q", "-m", "chore: tooling"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+        before = snapshot(repo)
+        dry = run_wr("adopt", str(repo), "--dry-run")
+        self.assertIn("! .ai/policy.py", dry.stdout)
+        self.assertIn("! .githooks/pre-commit", dry.stdout)
+        r = run_wr("adopt", str(repo))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Nothing was written", r.stderr)
+        self.assertEqual(snapshot(repo), before)
+        self.assertEqual(git(repo, "status", "--porcelain"), "")
+        self.assertEqual(git(repo, "config", "core.hooksPath").strip(), "")
+
+    def test_the_repositorys_own_git_hooks_keep_running(self):
+        repo = fixture_code_repo(self.tmp)
+        hooks = repo / ".git" / "hooks"
+        write(hooks / "pre-commit", '#!/bin/sh\ntouch "$(git rev-parse --git-dir)/own-pre-commit-ran"\n')
+        write(hooks / "pre-push", "#!/bin/sh\nexit 0\n")
+        for h in ("pre-commit", "pre-push"):
+            (hooks / h).chmod(0o755)
+        r = run_wr("adopt", str(repo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(".git/hooks/pre-commit keeps running", r.stdout)
+        self.assertIn("+ .githooks/pre-push", r.stdout)
+        self.assertIn("hooks/pre-push", (repo / ".githooks" / "pre-push").read_text(encoding="utf-8"))
+        done = subprocess.run([sys.executable, ".ai/checkpoint.py", "chore: adopt WorkRealm", "Rules and checks."],
+                              cwd=repo, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue((repo / ".git" / "own-pre-commit-ran").exists())
 
     def test_dirty_repo_is_refused(self):
         repo = fixture_code_repo(self.tmp)

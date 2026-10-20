@@ -1,6 +1,9 @@
 #!/bin/sh
 # Installed by WorkRealm (core.hooksPath = .githooks). Push every commit at once:
 # a local-only commit is one disk failure from gone. Silent no-op without a remote.
+# A hook the repository already had in .git/hooks still runs: core.hooksPath would silence it.
+LOCAL="$(git rev-parse --git-common-dir)/hooks/post-commit"
+if [ -x "$LOCAL" ]; then "$LOCAL" "$@"; fi
 git remote get-url origin >/dev/null 2>&1 || exit 0
 branch=$(git symbolic-ref --short -q HEAD) || exit 0
 git push -q origin "$branch" >/dev/null 2>&1 &

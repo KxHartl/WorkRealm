@@ -721,6 +721,17 @@ class Doctor:
         if have == HOOKS_PATH and files:
             self.report("OK", "git hooks", "core.hooksPath = .githooks; checks run on every commit")
             return
+        if have and files:  # another tool owns the hooks path: never taken over, only checked
+            theirs = self.dest / have
+            calls = {h: (theirs / h).is_file() and f"{HOOKS_PATH}/{h}" in (theirs / h).read_text(errors="ignore")
+                     for h in ("pre-commit", "commit-msg")}
+            if all(calls.values()):
+                self.report("OK", "git hooks", f"core.hooksPath = {have}, whose hooks call .githooks")
+            else:
+                missing = ", ".join(h for h, ok in calls.items() if not ok)
+                self.report("FAIL", "git hooks", f"core.hooksPath is {have} (another tool's): WorkRealm's checks do "
+                            f"not run. Call .githooks/<hook> \"$@\" from its {missing}; --fix leaves it alone")
+            return
 
         def repair():
             install_templates(self.dest, self.tier, self.ctx, self.lay, tool_only=True)
@@ -951,6 +962,45 @@ def misfits(dest: Path, meta: dict, tracked: list[str]) -> list[str]:
 
 GITIGNORE_BLOCK = ["# WorkRealm: secrets and per-machine files", ".env", "*.pem", "*.key", "id_rsa*",
                    ".claude/settings.local.json", "__pycache__/", "*conflicted copy*"]
+# core.hooksPath = .githooks silences .git/hooks. WorkRealm's own hooks call the local hook of
+# the same name; any other local hook gets a forwarder, so `adopt` switches nothing off.
+FORWARDER = """#!/bin/sh
+# Added by `wr adopt`: core.hooksPath = .githooks would silence the repository's own {name}
+# hook in .git/hooks, so this runs it. Without that hook it does nothing.
+HOOK="$(git rev-parse --git-common-dir)/hooks/{name}"
+[ -x "$HOOK" ] || exit 0
+exec "$HOOK" "$@"
+"""
+
+
+def tool_conflicts(dest: Path, tier: str, ctx: dict, lay: dict) -> list[str]:
+    """Files at WorkRealm's tool-owned paths that already exist with other content: another
+    tool's, which `adopt` must not overwrite."""
+    out = []
+    for rel, (_, content) in expected_files(tier, ctx, lay).items():
+        target = dest / rel
+        if rel.startswith(TOOL_OWNED) and target.is_file():
+            if target.read_bytes() != (content if isinstance(content, bytes) else content.encode()):
+                out.append(rel)
+    return out
+
+
+def local_hooks(dest: Path) -> list[str]:
+    """Active hooks in .git/hooks (not the .sample files git ships)."""
+    folder = dest / ".git" / "hooks"
+    if not folder.is_dir():
+        return []
+    return sorted(p.name for p in folder.iterdir() if p.is_file() and not p.name.endswith(".sample"))
+
+
+def forward_local_hooks(dest: Path, names: list[str], dry_run: bool = False) -> list[str]:
+    """Write a forwarder in .githooks/ for each local hook WorkRealm does not have itself."""
+    own = {p.name for p in (TIERS_DIR / "quick" / HOOKS_PATH).iterdir()}
+    added = [n for n in names if n not in own and not (dest / HOOKS_PATH / n).exists()]
+    if not dry_run:
+        for name in added:
+            write_file(dest / HOOKS_PATH / name, FORWARDER.format(name=name))
+    return added
 
 
 def cmd_adopt(args: argparse.Namespace) -> None:
@@ -991,6 +1041,12 @@ def cmd_adopt(args: argparse.Namespace) -> None:
     changed.append(f"{'~' if (dest / '.claude' / 'settings.json').exists() else '+'} .claude/settings.json "
                    "(WorkRealm hooks and permissions; your keys kept)")
     protected_files = [t for t in tracked if policy.protected_by(meta, t)]
+    conflicts = tool_conflicts(dest, tier, ctx, lay)
+    own_hooks_path = git(dest, "config", "core.hooksPath", check=False).stdout.strip() in ("", HOOKS_PATH)
+    hooks = local_hooks(dest) if own_hooks_path else []
+    forwarded = forward_local_hooks(dest, hooks, dry_run=True)
+    changed += [f"+ {HOOKS_PATH}/{h} (runs your .git/hooks/{h})" if h in forwarded else
+                f"~ .git/hooks/{h} keeps running (called from {HOOKS_PATH}/{h})" for h in hooks]
 
     print(f"{'Dry run: ' if args.dry_run else ''}adopting {dest} at the {tier} tier. Nothing is moved.\n")
     print("Roles:")
@@ -1005,9 +1061,17 @@ def cmd_adopt(args: argparse.Namespace) -> None:
     found_misfits = misfits(dest, meta, tracked)
     if found_misfits:
         print("\nDoes not fit (reported, not changed):" + "".join(f"\n  - {m}" for m in found_misfits))
+    if conflicts:
+        print("\nConflicts: these exist and are not WorkRealm's; adopting would overwrite them:"
+              + "".join(f"\n  ! {c}" for c in conflicts))
     if args.dry_run:
-        print("\nDry run: nothing was written. Run again without --dry-run to adopt.")
+        print("\nDry run: nothing was written. "
+              + ("Move or rename the conflicting files first, then adopt." if conflicts
+                 else "Run again without --dry-run to adopt."))
         return
+    if conflicts:
+        die(f"{len(conflicts)} file(s) at WorkRealm's tool paths belong to something else (listed above). "
+            "Nothing was written. Move or rename them, then run adopt again.")
 
     if gi_add:
         lead = "\n" if have and have[-1].strip() else ""
@@ -1031,8 +1095,8 @@ def cmd_adopt(args: argparse.Namespace) -> None:
     add_shims(dest, tier, ctx, lay)
     write_agents_md(dest, tier, ctx, lay)
     write_settings(dest, tier)
-    if not git(dest, "config", "core.hooksPath", check=False).stdout.strip() or \
-            git(dest, "config", "core.hooksPath", check=False).stdout.strip() == HOOKS_PATH:
+    if own_hooks_path:
+        forward_local_hooks(dest, hooks)
         install_githooks(dest)
     _, brain_status = sync_brain(dest, tier, meta)
     write_meta(dest, meta)
