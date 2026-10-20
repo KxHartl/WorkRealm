@@ -70,7 +70,8 @@ ADR_SECTIONS = ("## Decision", "## Alternatives", "## What would change my mind"
                 "## Cost of reversal", "## Decision log")
 CONVENTIONAL = re.compile(
     r"^(feat|fix|docs|chore|refactor|test|perf|build|ci|style|revert)(\([\w./-]+\))?!?: \S")
-EXEMPT_MSG = re.compile(r"^(Merge |Revert \"|fixup! |squash! |amend! )")
+# Messages git and GitHub write themselves ("Initial commit" starts a repository made from a template).
+EXEMPT_MSG = re.compile(r"^(Merge |Revert \"|fixup! |squash! |amend! |Initial commit$)")
 AI_TAG = "\U0001F916 [AI]"  # robot face: marks a commit whose work a subagent did
 AI_TRAILER = re.compile(r"^AI-Agent:\s*\S+", re.M)
 # A literal credential in a config file (a ${VAR} reference is fine).

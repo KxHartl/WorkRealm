@@ -5,6 +5,7 @@
     python wr.py new NAME --quick      quick tier: hours to a day
     python wr.py new NAME --project    project tier: weeks to months, experiments, ADRs, releases
     python wr.py new NAME --with github,rag --ticket ABC-123   integrations, the ticket it is for
+    python wr.py new NAME --template   a GitHub template repo: "Use this template", then .ai/wr.py init
     python wr.py integrate github,rag  add integrations (.mcp.json) to an existing workspace
     python wr.py upgrade --to project  move a workspace up a tier (adds files only)
     python wr.py sync [--check]        re-sync AgentBrain work agents and skills
@@ -498,6 +499,16 @@ def create_remote(dest: Path, name: str) -> str:
     return f"remote: private GitHub repo created and pushed ({r.stdout.strip()})"
 
 
+def mark_template(dest: Path) -> str:
+    """Make the GitHub repo a template: a new workspace is then "Use this template" plus
+    `python .ai/wr.py init`, with no WorkRealm installed on that machine."""
+    r = subprocess.run(["gh", "repo", "edit", "--template"], cwd=dest, capture_output=True, text=True)
+    if r.returncode != 0:
+        return f"not marked as a template: {r.stderr.strip()}. Later: gh repo edit --template"
+    return ('GitHub template: "Use this template" on GitHub (or gh repo create NAME --template OWNER/REPO '
+            "--private --clone), then in the clone: python .ai/wr.py init")
+
+
 # ---------------------------------------------------------------- new / upgrade / sync
 
 def cmd_new(args: argparse.Namespace) -> None:
@@ -516,6 +527,8 @@ def cmd_new(args: argparse.Namespace) -> None:
 
     today = dt.date.today().isoformat()
     meta = {"name": args.name, "created": today, "lang": args.lang}
+    if args.template:
+        meta["template"] = True
     if args.ticket:
         meta["ticket"] = args.ticket
     meta.update(tier_meta(tier, meta))
@@ -541,9 +554,12 @@ def cmd_new(args: argparse.Namespace) -> None:
         "-m", "Generated structure, rules and hooks; nothing project-specific yet.",
         *(["-m", f"Refs: {args.ticket}"] if args.ticket else []))
 
-    remote = args.remote if args.remote is not None else REMOTE_BY_DEFAULT[tier]
+    remote = args.remote if args.remote is not None else args.template or REMOTE_BY_DEFAULT[tier]
     status = create_remote(dest, args.name) if remote else "no remote (pass --remote to create one)"
-    print(f"Created {tier} workspace: {dest}\n  {status}\n  {brain_status}")
+    if args.template:
+        status += "\n  " + (mark_template(dest) if status.startswith("remote:") else
+                            "template: push it to GitHub, then gh repo edit --template")
+    print(f"Created {tier} workspace{' template' if args.template else ''}: {dest}\n  {status}\n  {brain_status}")
     if args.ticket:
         print(f"  ticket {args.ticket}: commits end with `Refs: {args.ticket}` (checkpoint adds it)")
     for note in integration_notes(integrations) if integrations else []:
@@ -1194,6 +1210,8 @@ def main(argv: list[str] | None = None) -> None:
     n.add_argument("--with", dest="with_", metavar="LIST",
                    help=f"comma-separated integrations for .mcp.json: {', '.join(INTEGRATIONS)}")
     n.add_argument("--ticket", metavar="KEY", help="the ticket this workspace is for, e.g. ABC-123")
+    n.add_argument("--template", action="store_true",
+                   help="make it a GitHub template repo: new workspaces without WorkRealm installed")
     n.set_defaults(func=cmd_new)
 
     i = sub.add_parser("integrate", help="add integrations (MCP servers in .mcp.json) to a workspace")

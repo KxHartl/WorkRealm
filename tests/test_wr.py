@@ -1069,6 +1069,56 @@ class TestTicket(Base):
         self.assertNotIn("R-TICKET", commit(ws, "feat: no ticket here").stderr)
 
 
+class TestTemplate(Base):
+    def use_template(self, template: Path, name: str) -> Path:
+        """What GitHub's "Use this template" does: the tracked files, one "Initial commit", no hooks."""
+        import tarfile
+        archive = self.tmp / f"{name}.tar"
+        subprocess.run(["git", "archive", "--format=tar", "-o", str(archive), "HEAD"], cwd=template, check=True)
+        repo = self.tmp / name
+        with tarfile.open(archive) as tar:
+            tar.extractall(repo)
+        for args in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "Initial commit"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+        return repo
+
+    def test_a_workspace_from_a_github_template_needs_only_init(self):
+        tpl = self.new("task-template", "--template")
+        self.assertTrue(json.loads((tpl / ".workrealm.json").read_text())["template"])
+        self.assertNotIn("Made from the template", helper(tpl, "status").stdout)  # the template itself
+
+        ws = self.use_template(tpl, "acme-report")
+        ci = subprocess.run([sys.executable, ".ai/policy.py", "ci", "--before", "0" * 40], cwd=ws,
+                            capture_output=True, text=True)
+        self.assertEqual(ci.returncode, 0, ci.stderr)                    # GitHub's own first commit passes
+        self.assertIn("Made from the template 'task-template'", helper(ws, "status").stdout)
+
+        r = helper(ws, "init")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(git(ws, "config", "core.hooksPath").strip(), ".githooks")
+        self.assertEqual(git(ws, "status", "--porcelain"), "")
+        self.assertIn("chore: start acme-report from the task-template template", git(ws, "log", "--oneline"))
+        meta = json.loads((ws / ".workrealm.json").read_text())
+        self.assertEqual((meta["name"], meta["from_template"]), ("acme-report", "task-template"))
+        self.assertNotIn("template", meta)
+        for rel in ("README.md", "STATE.md", "docs/decisions/DECISIONS.md"):
+            first = (ws / rel).read_text(encoding="utf-8").splitlines()[0]
+            self.assertTrue(first.endswith("acme-report"), first)
+        self.assertNotIn("task-template", (ws / "STATE.md").read_text(encoding="utf-8"))
+        self.assertNotIn("Made from the template", helper(ws, "status").stdout)
+        again = helper(ws, "init")
+        self.assertIn("already on", again.stdout)
+        self.assertEqual(git(ws, "log", "--oneline").count("\n"), 2)     # nothing more to commit
+
+    def test_a_fresh_clone_is_told_its_hooks_are_off(self):
+        ws = self.new("clone1", "--quick")
+        git(ws, "config", "--unset", "core.hooksPath")
+        self.assertIn("Git hooks are OFF", helper(ws, "status").stdout)
+        helper(ws, "init")
+        self.assertEqual(git(ws, "config", "core.hooksPath").strip(), ".githooks")
+        self.assertNotIn("Git hooks are OFF", helper(ws, "status").stdout)
+
+
 class TestCI(Base):
     def ci(self, ws: Path, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run([sys.executable, ".ai/policy.py", "ci", *args], cwd=ws, capture_output=True, text=True)

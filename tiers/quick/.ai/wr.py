@@ -2,6 +2,7 @@
 """Workspace helpers -- the right way to do a thing in one command, from any tool.
 
     python .ai/wr.py status                      where things stand (also shown at session start)
+    python .ai/wr.py init [--name NAME]          set up a fresh clone (hooks; a template's name and date)
     python .ai/wr.py checkpoint "type: msg" [body]
     python .ai/wr.py handoff                     before ending a session
     python .ai/wr.py ticket start KEY [TITLE] [--type fix]   a branch named after the ticket
@@ -179,6 +180,11 @@ def status_text() -> str:
     lines = [f"WorkRealm workspace '{m.get('name', ROOT.name)}' -- tier {m.get('tier', '?')}, "
              f"WorkRealm {m.get('workrealm_version', '?')}",
              f"Git: {g['branch']}, {g['dirty']} uncommitted, {pushed}"]
+    if from_template(m):
+        lines.append(f"Made from the template '{m['name']}': python .ai/wr.py init names it '{ROOT.name}' "
+                     "and turns the git hooks on")
+    elif not hooks_path():
+        lines.append("Git hooks are OFF in this clone, so commits are not checked: python .ai/wr.py init")
     ticket = active_ticket(ROOT, m)
     if ticket:
         lines.append(f"Ticket: {ticket} (commits end with `Refs: {ticket}`; checkpoint adds it)")
@@ -218,6 +224,55 @@ def cmd_handoff(args) -> None:
           "  1. STATE.md: what was done, the next concrete step, anything blocking or waiting on the owner.\n"
           "  2. Anything unresolved that someone must answer -> python .ai/wr.py open-item ...\n"
           '  3. python .ai/checkpoint.py "docs: update STATE for handoff"  (the tree must be clean)')
+
+
+def hooks_path() -> str:
+    return git("config", "core.hooksPath").stdout.strip()
+
+
+def from_template(m: dict) -> bool:
+    """Made with GitHub's "Use this template" and still carrying the template's name."""
+    return bool(m.get("template")) and m.get("name") != ROOT.name
+
+
+def cmd_init(args) -> None:
+    """Set up this clone: the git hooks (core.hooksPath is local config, so every clone needs it
+    once) and, in a repository made from a template, the workspace's own name and date."""
+    have = hooks_path()
+    if not have:
+        git("config", "core.hooksPath", ".githooks")
+        print("git hooks on: core.hooksPath = .githooks")
+    elif have != ".githooks":
+        print(f"core.hooksPath is {have} (another tool's): left alone. WorkRealm's checks run only if its "
+              "hooks call .githooks/pre-commit and .githooks/commit-msg.")
+    else:
+        print("git hooks: already on")
+    m = meta()
+    name = args.name or ROOT.name
+    if not m.get("template") or (name == m.get("name") and not args.name):
+        return
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+        die(f"invalid name {name!r}: letters, digits, '.', '_', '-' only (pass one: init --name NAME)")
+    old = m["name"]
+    heading = re.compile(rf"^(#[^\n]*?)(?<![\w.-]){re.escape(old)}$")
+    for path in git("ls-files", "-z", "*.md").stdout.split("\0"):
+        file = ROOT / path
+        if not path or not file.is_file():
+            continue
+        text = file.read_text(encoding="utf-8")
+        first, _, rest = text.partition("\n")
+        new = heading.sub(lambda mt: mt.group(1) + name, first) + ("\n" + rest if _ else "")
+        if path == "STATE.md":
+            new = re.sub(r"(\*\*Created:\*\*\s*)\d{4}-\d{2}-\d{2}", rf"\g<1>{today()}", new, count=1)
+        if new != text:
+            file.write_text(new, encoding="utf-8", newline="\n")
+    m.update({"name": name, "created": today(), "from_template": old})
+    m.pop("template")
+    (ROOT / ".workrealm.json").write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8", newline="\n")
+    print(f"named {name} (was the template {old}), created {today()}")
+    r = subprocess.run([sys.executable, str(ROOT / ".ai" / "checkpoint.py"), f"chore: start {name} from the {old} "
+                        "template", "The workspace's own name and date replace the template's."], cwd=ROOT)
+    sys.exit(r.returncode)
 
 
 def cmd_ticket_start(args) -> None:
@@ -445,6 +500,9 @@ def main(argv: list[str] | None = None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status", help="where things stand").set_defaults(func=cmd_status)
+    i = sub.add_parser("init", help="set up this clone: git hooks; a repo made from a template gets its own name")
+    i.add_argument("--name", help="the workspace's name (default: the folder's)")
+    i.set_defaults(func=cmd_init)
     c = sub.add_parser("checkpoint", help="commit everything after the policy checks")
     c.add_argument("subject")
     c.add_argument("body", nargs="?")
