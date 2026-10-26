@@ -298,6 +298,20 @@ class TestGitPolicy(Base):
         write(ws / "src" / "DECISIONS.md", "x")
         self.assertRefused(commit(ws, "docs: stray"), "R-ZONES")
 
+    def test_renaming_a_legacy_adr_does_not_demand_new_sections(self):
+        ws = self.new("g7b", "--project")
+        adr = ws / "docs" / "decisions" / "adr"
+        legacy = "# ADR-1: Storage\n\n## Decision\n\nPostgres, because the team knows it well.\n" * 3
+        write(adr / "0001-storage.md", legacy)                  # predates the rule (adopted)
+        subprocess.run(["git", "add", "-A"], cwd=ws)
+        subprocess.run(["git", "commit", "-q", "--no-verify", "-m", "docs: legacy adr"], cwd=ws, check=True)
+        subprocess.run(["git", "mv", "docs/decisions/adr/0001-storage.md", "docs/decisions/adr/0001-database.md"],
+                       cwd=ws, check=True)
+        write(adr / "0001-database.md", legacy + "See [the log](../DECISIONS.md).\n")  # moved and lightly edited
+        self.assertCommitted(commit(ws, "docs: rename adr", "R-NAMES."))
+        write(adr / "0002-cache.md", legacy)                    # a new ADR still needs every section
+        self.assertRefused(commit(ws, "docs: adr", "why"), "R-ADR")
+
     def test_english_warns_but_commits(self):
         ws = self.new("g8", "--quick")
         write(ws / "notes.md", "Odluka je donesena: što prije.\n")

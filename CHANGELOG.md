@@ -25,6 +25,9 @@ Adopting a real repository: its names, its branches and the machines it runs on.
 - **`agent_namespaces`** in `.workrealm.json` chooses which AgentBrain agent folders a workspace
   syncs (default `["work"]`; `"."` is the top-level academic specialists). Adopting a thesis
   repository no longer prunes the agents it was working with.
+- **Renaming a legacy ADR** (to its R-NAMES name, `ADR-001-x.md` -> `0001-x.md`) no longer
+  demands the sections it never had: git's rename detection links it to the old file, which is
+  checked like an in-place edit. A new ADR still needs every section.
 - The large-file check skips files in Git LFS: the history carries a pointer, not the file.
 - **GitHub Issues as tickets:** issue #42's key is `GH-42` (GitHub links it like `#42`), so
   `ticket start GH-42 "title"` and the `Refs:` trailer work unchanged.

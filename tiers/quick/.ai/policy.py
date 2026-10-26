@@ -152,6 +152,20 @@ def staged_changes(root: Path) -> list[tuple[str, str]]:
     return [(parts[i][0], parts[i + 1]) for i in range(0, len(parts) - 1, 2)]
 
 
+def staged_renames(root: Path) -> dict[str, str]:
+    """{new path: old path} for the staged renames git detects (a moved file, maybe edited)."""
+    parts = [p for p in git(root, "diff", "--cached", "--name-status", "-M", "-z").stdout.split("\0") if p]
+    out, i = {}, 0
+    while i < len(parts):
+        status = parts[i]
+        if status[0] in "RC":
+            out[parts[i + 2]] = parts[i + 1]
+            i += 3
+        else:
+            i += 2
+    return out
+
+
 def staged_text(root: Path, path: str) -> str:
     return git(root, "show", f":{path}").stdout
 
@@ -417,6 +431,9 @@ def check_adr_format(root, meta, changes):
         missing = adr_missing(text)
         if missing and status == "M" and adr_missing(head_text(root, path)):
             continue  # legacy ADR: not complete before either
+        if missing and status == "A" and (old := staged_renames(root).get(path)) \
+                and adr_missing(head_text(root, old)):
+            continue  # a legacy ADR under a new name (a rename to R-NAMES)
         if missing:
             yield block("R-ADR", f"{path} is missing: {', '.join(missing)}. Start from {adr_dir}/TEMPLATE.md "
                                  "(python .ai/wr.py adr new does).")
