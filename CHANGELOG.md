@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.10.0 — 2026-10-26
+
+Names follow the standard of what they name, instead of one style for everything.
+
+- **R-NAMES** replaces the blanket "names are kebab-case" sentences in R-LANG and R-PLACE, which
+  were wrong for code: a kebab-case Python module cannot be imported, and `unittest` never finds a
+  `test-x.py`. The first of these decides a name: what a tool requires, the language's or format's
+  standard (a table covers Git, Python, JS/TS, Java/Kotlin/C#, Go, Rust, C/C++, R, shell,
+  PowerShell, SQL, data columns, notebooks, LaTeX, documents, received and derived data), what the
+  project configured, and only then lowercase ASCII kebab-case.
+- **Names that break a checkout are refused** at every tier: reserved Windows names, characters
+  Windows refuses, a trailing dot or space, paths that differ only in case, paths over 200
+  characters.
+- **Non-ASCII names and spaces warn** with the ASCII name to use (`č` → `c`, `đ` → `d`), and a
+  branch outside `<type>/<short-desc>` warns. The new `python .ai/wr.py names [--fix]` lists them and
+  renames them with `git mv`, leaving committed write-once evidence alone and listing the files that
+  still mention an old name.
+- **Received files get a standard name when they arrive.** `source add` and `source promote` make it
+  ASCII, lowercase kebab-case with a lowercase extension, and note the original name in
+  `SOURCES_LOG.md`. A derived data file keeps the stem of its raw file. Helper slugs transliterate
+  instead of dropping letters (`Čvorište` was `vori-te`, now `cvoriste`).
+- **R-BRANCH** uses `<type>/<short-desc>` branches instead of `ai/<feature>`.
+- **`.editorconfig`** ships with every tier, with each language's standard indentation; an existing
+  one is never overwritten.
+- The English check ignores text in `code` spans: a quoted name is not prose.
+- `wr doctor --fix` brings an existing workspace's checks up to date.
+
 ## 0.9.0 — 2026-10-20
 
 Safe adoption, repository hygiene, and workspaces from a GitHub template.

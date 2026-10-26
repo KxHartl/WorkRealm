@@ -64,8 +64,8 @@ rules and checks that name its real folders.
 | | **quick** | **task** (default) | **project** |
 |---|---|---|---|
 | For | Hours to a day: a fix, a script, a one-off | Days to weeks: a feature, an evaluation, a report | Weeks to months: multi-phase, regulated or high-stakes work |
-| Rules (`AGENTS.md`) | language, STATE first, commits, secrets, verify-don't-recall, scope | + where things go, sources, decisions, branches, specialists, lessons | + project layout, write-once evidence, inbox, ADRs, backups |
-| Git checks, any tool | secrets, Conventional Commits, AI marking, English (warn) | + write-once paths, sources logged, naming, decision register, why-body | + one home per document, ADR sections |
+| Rules (`AGENTS.md`) | language, names, STATE first, commits, secrets, verify-don't-recall, scope | + where things go, sources, decisions, branches, specialists, lessons | + project layout, write-once evidence, inbox, ADRs, backups |
+| Git checks, any tool | secrets, Conventional Commits, AI marking, names safe on every system, English and ASCII names (warn) | + write-once paths, sources logged, naming, decision register, why-body | + one home per document, ADR sections |
 | Claude Code hooks | `session_start`, `checkpoint_gate`, `bash_guard` | + `protect_paths` | + `zone_guard`, inbox gate |
 | Helpers and skills | `status`, `checkpoint`, `handoff` | + `note`, `source add`, `decide`, `open-item` | + `source promote`, `plan new`, `adr new`, `exp new`, `run new`, `release cut` |
 | AgentBrain agents | — | `researcher`, `reviewer` | + `decision_keeper`, `lab_runner`, `releaser` |
@@ -111,8 +111,14 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
 
 - Language (R-LANG): final outputs (`reports/`, `releases/`: a report, a seminar paper, a
   presentation) are Croatian; everything else (code, comments, commits, notes, decisions, plans,
-  `STATE.md`) is English, and file names are ASCII. `--lang` only sets the chat rule; `match`
-  (the default) replies in the language the user writes in.
+  `STATE.md`) is English. `--lang` only sets the chat rule; `match` (the default) replies in the
+  language the user writes in.
+- Names (R-NAMES): a tool's required name first, then the standard of the language or format
+  (PEP 8 for Python, `PascalCase` files for Java and C#, Conventional Branch for branches ...),
+  then the project's own configuration, else lowercase ASCII kebab-case. Every name is ASCII
+  (`č` → `c`, `đ` → `d`); received files are renamed to the standard when they arrive, with the
+  original name logged. Names that break a checkout on Windows or macOS are refused; non-ASCII
+  names, spaces and off-convention branches warn, and `python .ai/wr.py names --fix` renames them.
 - `upgrade` adds the missing files, rewrites the generated block of `AGENTS.md` (your
   *Project-specific rules* section is kept), the `hooks` key of `.claude/settings.json` and the
   tool-owned files in `.ai/`, `.githooks/` and `.claude/skills/`. Your own files are never overwritten.

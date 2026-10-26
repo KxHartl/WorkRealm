@@ -1,8 +1,8 @@
 # STATE — WorkRealm
 
-- **Version:** 0.9.0 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
+- **Version:** 0.10.0 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
 - **Owner:** KxHartl, who picks and approves each release
-- **Phase:** 0.9.0 (safe adopt, doctor hygiene, GitHub template path) is done. Waiting for the owner's review.
+- **Phase:** 0.10.0 (R-NAMES: names follow the standard of what they name) is done. Waiting for the owner's review.
 - **Pairs with:** AgentBrain 2.6.0 (`15c62be`): work agents for the 0.5.0 layout, and the RAG MCP
   server that `--with rag` starts.
 
@@ -27,15 +27,15 @@ AgentBrain. The goals and the design are in `docs/DESIGN.md`.
   workspace, so adopted folders keep their own names.
 - **Policy core:** `.ai/policy.py`, run by the git hooks (every tool) and by the Claude hooks
   `session_start`, `checkpoint_gate`, `bash_guard`, `protect_paths` and `zone_guard`.
-- **Helpers:** `.ai/wr.py` (`init`, `ticket start`, `note`, `source add|promote`, `decide`, `open-item`, `close-item`,
+- **Helpers:** `.ai/wr.py` (`init`, `ticket start`, `names [--fix]`, `note`, `source add|promote`, `decide`, `open-item`, `close-item`,
   `plan new`, `adr new`, `exp new`, `run new`, `release cut`, `status`, `handoff`) and 10 skills
   that wrap them.
 - **AI marking:** applied to subagent work only, set by the hook from `agent_id`.
-- **Tests:** 69 end-to-end tests, with generic adopt fixtures (a code repo, a research folder). AgentBrain has `tests/test_sync.py` and `tests/test_rag_mcp.py` (in its CI).
+- **Tests:** 75 end-to-end tests, with generic adopt fixtures (a code repo, a research folder). AgentBrain has `tests/test_sync.py` and `tests/test_rag_mcp.py` (in its CI).
 
 ## Next (see `docs/DESIGN.md`)
 
-1. The owner reviews 0.9.0, and creates the template repos when wanted
+1. The owner reviews 0.10.0 (and 0.9.0), and creates the template repos when wanted
    (`wr new workrealm-task --template`, one per tier that is used). Then, in an order the owner picks:
    - an on-demand `.ai/REFERENCE.md`;
    - a devcontainer (Codespaces) on top of the template path;
