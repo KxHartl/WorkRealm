@@ -337,7 +337,7 @@ CODE_EXT = {".py", ".pyi", ".go", ".rs", ".c", ".h", ".cc", ".cpp", ".hpp", ".r"
 BUILD_FILES = {"CMakeLists.txt", "Makefile", "Dockerfile", "package.xml", "setup.py", "setup.cfg"}
 META_NAME = re.compile(r"^[A-Z0-9][A-Z0-9_-]*\.md$")  # STATE.md, SOURCES_LOG.md: names people look for
 REF_EXT = TEXT_EXT | {".canvas", ".tex", ".bib"}
-WIKILINK = re.compile(r"(!?\[\[)([^\]|#\n]+)")
+WIKILINK = re.compile(r"(!?\[\[)([^\]|#\n\\]+)")  # a table escapes the alias bar: [[note\|text]]
 MD_LINK = re.compile(r"(\]\()([^)\s#]+)")
 STRUCTURAL_NAMES = {"README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "INDEX.md", "MANIFEST.md",
                     "SUMMARY.md", "STATE.md", "TEMPLATE.md", "CHANGELOG.md", "LICENSE.md", "CONTRIBUTING.md"}
@@ -384,11 +384,18 @@ def better_name(path: str, style: bool, code: set[str], keep: list[str]) -> str:
     return "/".join(out)
 
 
-def ref_maps(renames: list[tuple[str, str]]) -> tuple[dict, dict, list[str]]:
+def ref_maps(renames: list[tuple[str, str]], kept: set[str] | frozenset = frozenset()) \
+        -> tuple[dict, dict, list[str]]:
     """What a reference to a renamed file or folder becomes: by name (with its extension, or a
     folder), and by note stem (an Obsidian [[link]] leaves out .md). A rename is name-local, so
-    one old name always becomes one new name; when it does not (a kept twin), it is left alone."""
+    one old name always becomes one new name. When it does not -- two new names, or a path in
+    `kept` that keeps the same name (a twin outside the scope) -- the name is left alone."""
     names, stems, clashes = {}, {}, set()
+    for path in kept:
+        for segment in path.split("/"):
+            names.setdefault(segment, segment)
+        if Path(path).suffix in (".md", ".canvas"):
+            stems.setdefault(Path(path).stem, Path(path).stem)
     for old, new in renames:
         for table, o, n in [(names, a, b) for a, b in zip(old.split("/"), new.split("/"))] + \
                 [(stems, Path(old).stem, Path(new).stem)] * (Path(old).suffix in (".md", ".canvas")):
@@ -400,6 +407,8 @@ def ref_maps(renames: list[tuple[str, str]]) -> tuple[dict, dict, list[str]]:
     for o in clashes:
         names.pop(o, None)
         stems.pop(o, None)
+    names = {o: n for o, n in names.items() if o != n}
+    stems = {o: n for o, n in stems.items() if o != n}
     return names, stems, sorted(clashes)
 
 
@@ -504,7 +513,7 @@ def cmd_names(args) -> None:
             targets[better.casefold()] = path
             planned.append((path, better))
     if args.rewrite_refs and planned:
-        names, stems, clashes = ref_maps(planned)
+        names, stems, clashes = ref_maps(planned, paths - {old for old, _ in planned})
         texts = read_texts(paths)
         moved = dict(planned)
         after = {p: t if p in tracked and protected_by(m, p) else rewrite_refs(t, names, stems)
@@ -537,7 +546,7 @@ def cmd_names(args) -> None:
             done.append((path, better))
             print(f"renamed  {path} -> {better}")
         if args.rewrite_refs and done:
-            names, stems, _ = ref_maps(done)
+            names, stems, _ = ref_maps(done, paths - {old for old, _ in done})
             moved = dict(done)
             for path, text in read_texts({moved.get(p, p) for p in paths}).items():
                 if path in tracked and protected_by(m, path):

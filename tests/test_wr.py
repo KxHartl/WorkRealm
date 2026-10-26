@@ -1292,6 +1292,22 @@ class TestNames(Base):
         self.assertIn(b"\\notes\\10-project\\thesis-plan.md", ps1)           # a Windows path
         self.assertEqual(commit(ws, "docs: default names").returncode, 0)
 
+    def test_a_twin_outside_the_scope_keeps_its_references(self):
+        ws = self.new("n7b", "--quick")
+        write(ws / "notes" / "plans" / "00_index.md", "Plans.\n")
+        write(ws / "sources" / "00_index.md", "Scans.\n")             # outside the scope: keeps its name
+        write(ws / "notes" / "home.md", "| Plans | [[plans/00_index\\|the index]] |\n"
+              "See `sources/00_index.md` and [[sources_list]].\n")
+        write(ws / "notes" / "sources_list.md", "x\n")
+        self.assertEqual(commit(ws, "docs: vault").returncode, 0)
+        r = helper(ws, "names", "notes", "--style", "--rewrite-refs", "--fix")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("left alone", r.stdout)
+        home = (ws / "notes" / "home.md").read_text(encoding="utf-8")
+        self.assertIn("`sources/00_index.md`", home)                       # the twin's path untouched
+        self.assertIn("[[sources-list]]", home)                            # an unrelated rename still lands
+        self.assertTrue((ws / "notes" / "plans" / "00-index.md").exists())
+
     def test_rewrite_refs_refuses_a_rename_that_breaks_a_link(self):
         ws = self.new("n8")
         write(ws / "references" / "reading_list.md", "Start with [[my_note]].\n")  # write-once: not rewritten

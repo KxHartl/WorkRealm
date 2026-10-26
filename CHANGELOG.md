@@ -20,6 +20,9 @@ Adopting a real repository: its names, its branches and the machines it runs on.
 - **`wr doctor` knows its machine.** It detects platform (Windows, Linux, WSL, macOS), container and
   host, or takes `WORKREALM_ENV`, and checks the matching entry of the optional `environments` list
   in `.workrealm.json`: the tools it needs on `PATH` and the services it must reach.
+- **`--rewrite-refs` is safer:** a file outside the scope that keeps a renamed file's name (a twin)
+  keeps its references; folders are rewritten in Windows paths and quoted code segments
+  (`ROOT / 'notes' / '10_project'`); a table's escaped `[[note\|text]]` is read as a link.
 - **`adopt --role ROLE=PATH`** (repeatable) sets where a role lives when the guess is wrong, e.g.
   `--role inbox=data/staging --role sources_log=data/SOURCES_LOG.md`; the dry run marks it `given`.
 - **`agent_namespaces`** in `.workrealm.json` chooses which AgentBrain agent folders a workspace
