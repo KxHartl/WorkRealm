@@ -860,6 +860,15 @@ class TestDoctor(Base):
         self.assertTrue(row(r.stdout, "policy").startswith("WARN"))
         self.assertIn("Random.md", r.stdout)
 
+    def test_a_non_ascii_finding_does_not_crash_a_cp1252_console(self):
+        ws = self.new("d6b")
+        write(ws / "docs" / "notes" / "Čvor.md", "x")
+        subprocess.run(["git", "add", "-A"], cwd=ws)
+        subprocess.run(["git", "commit", "-q", "--no-verify", "-m", "docs: node"], cwd=ws)
+        r = run_wr("doctor", "--path", str(ws), env={**NO_BRAIN, "PYTHONIOENCODING": "cp1252"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("vor.md", r.stdout)
+
 
 def fixture_code_repo(root: Path) -> Path:
     """A typical code repository with its own rules files and an ignored build folder."""

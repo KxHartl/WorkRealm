@@ -1382,6 +1382,11 @@ def main(argv: list[str] | None = None) -> None:
     a.set_defaults(func=cmd_adopt)
 
     args = p.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):  # a non-ASCII path on a cp1252 console must not crash a report
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except Exception:
+            pass
     args.func(args)
 
 
