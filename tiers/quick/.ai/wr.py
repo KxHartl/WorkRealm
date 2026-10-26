@@ -420,8 +420,10 @@ def rewrite_refs(text: str, names: dict, stems: dict) -> str:
     folders = sorted((k for k in names if not Path(k).suffix), key=len, reverse=True)
     if folders:
         alt = "|".join(map(re.escape, folders))
-        text = re.sub(rf"(?<![\w.-])({alt})(?=/)|(?<=/)({alt})(?![\w.-])",
-                      lambda mt: names[mt.group(1) or mt.group(2)], text)
+        # A folder in a path (either separator, so Windows paths too), or a whole quoted
+        # segment, as code joins it: ROOT / "notes" / "10_project".
+        text = re.sub(rf"(?<![\w.-])({alt})(?=[/\\])|(?<=[/\\])({alt})(?![\w.-])|(?<=[\"'])({alt})(?=[\"'])",
+                      lambda mt: names[mt.group(1) or mt.group(2) or mt.group(3)], text)
     return text
 
 

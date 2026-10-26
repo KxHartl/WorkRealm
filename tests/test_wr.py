@@ -1258,10 +1258,11 @@ class TestNames(Base):
         write(ws / "notes" / "fig_01.png", "png")
         write(ws / "notes" / "README.md", "Start at [[ops_log]].\n")
         write(ws / "notes" / "overview.canvas", '{"nodes": [{"file": "notes/10_project/thesis_plan.md"}]}\n')
-        write(ws / "notes" / "card_tools" / "make_cards.py", "SRC = 'notes/ops_log.md'\n")
+        write(ws / "notes" / "card_tools" / "make_cards.py",
+              "SRC = 'notes/ops_log.md'\nPLAN = ROOT / 'notes' / '10_project'\n")
         write(ws / "notes" / "99_inbox" / "new_idea.md", "x\n")
         write(ws / "src" / "data_loader.py", "x\n")
-        (ws / "run.ps1").write_bytes(b"Get-Content notes/ops_log.md\r\n")
+        (ws / "run.ps1").write_bytes(b"Get-Content notes/ops_log.md\r\nGet-Content $root\\notes\\10_project\\thesis_plan.md\r\n")
         self.assertEqual(commit(ws, "docs: vault").returncode, 0)
         r = helper(ws, "names", "notes", "--style", "--rewrite-refs", "--keep", "notes/99_inbox")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1283,8 +1284,12 @@ class TestNames(Base):
         plan = (ws / "notes" / "10-project" / "thesis-plan.md").read_text(encoding="utf-8")
         self.assertIn("[[ops-log]] and [[10-project/thesis-plan|plan]]", plan)
         self.assertIn("notes/10-project/thesis-plan.md", (ws / "notes" / "overview.canvas").read_text())
-        self.assertIn("notes/ops-log.md", (ws / "notes" / "card_tools" / "make_cards.py").read_text())
-        self.assertIn(b"notes/ops-log.md\r\n", (ws / "run.ps1").read_bytes())  # CRLF kept
+        cards = (ws / "notes" / "card_tools" / "make_cards.py").read_text()
+        self.assertIn("notes/ops-log.md", cards)
+        self.assertIn("ROOT / 'notes' / '10-project'", cards)                # a quoted path segment
+        ps1 = (ws / "run.ps1").read_bytes()
+        self.assertIn(b"notes/ops-log.md\r\n", ps1)                          # CRLF kept
+        self.assertIn(b"\\notes\\10-project\\thesis-plan.md", ps1)           # a Windows path
         self.assertEqual(commit(ws, "docs: default names").returncode, 0)
 
     def test_rewrite_refs_refuses_a_rename_that_breaks_a_link(self):
