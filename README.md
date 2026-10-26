@@ -119,6 +119,11 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
   (`č` → `c`, `đ` → `d`); received files are renamed to the standard when they arrive, with the
   original name logged. Names that break a checkout on Windows or macOS are refused; non-ASCII
   names, spaces and off-convention branches warn, and `python .ai/wr.py names --fix` renames them.
+  Adopting a repository with its own style (snake_case notes, an Obsidian vault):
+  `python .ai/wr.py names notes --style --rewrite-refs` lists what the default style renames and
+  how many files' links change; add `--fix` to do it. Code and folders with code keep their
+  style, `--keep GLOB` keeps a name a tool's config uses, and a rename that would break a
+  `[[wikilink]]` is refused as a whole.
 - `upgrade` adds the missing files, rewrites the generated block of `AGENTS.md` (your
   *Project-specific rules* section is kept), the `hooks` key of `.claude/settings.json` and the
   tool-owned files in `.ai/`, `.githooks/` and `.claude/skills/`. Your own files are never overwritten.
@@ -130,14 +135,20 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
 - `doctor` checks that the guard-rails still work:
   - version, tool files, settings and rules block;
   - `core.hooksPath` (after a fresh clone, commits are not checked until it is set);
-  - remote and unpushed commits (a failed background push shows up here);
+  - remote and unpushed commits; a failed background push is kept in `.git/workrealm-push.log`
+    and shown here, in the status and at session start until a push lands;
+  - branches already merged and worktrees outside `.claude/worktrees/` or gone from disk (R-BRANCH);
+  - the environment: platform, container and host (or `WORKREALM_ENV`) matched against the
+    optional `environments` in `.workrealm.json`, each with the `tools` it needs, the `services`
+    it must reach and its `setup` command, e.g.
+    `{"name": "lab-pc", "host": "lab-*", "tools": ["git", "git-lfs"], "services": [{"name": "qdrant", "url": "http://qdrant.lan:6333"}]}`;
   - work tree, the AgentBrain pin, tracked secrets (including literal tokens in `.mcp.json`);
   - hygiene: tracked virtualenvs, build output (`node_modules/`, `__pycache__/`, `build/`, ...)
     and files over 10 MB, with the command that untracks them;
   - a whole-tree policy pass that lists existing violations without blocking them.
 
   `--fix` repairs what is safe to repair: hooks path, tool files, settings, rules block, sync, and
-  pushing a branch that has no upstream. It never touches secrets (they need rotating), never
+  pushing a branch that has no upstream or whose last push failed, pruning vanished worktrees. It never touches secrets (they need rotating), never
   untracks files, and never takes over a `core.hooksPath` another tool set: that is reported
   until its hooks call `.githooks/pre-commit` and `.githooks/commit-msg`. `--ci` skips the checks
   of local state and exits 1 on a failure.
@@ -170,7 +181,8 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
   whether to trust the servers. `doctor` checks the entries and, locally, the variables.
 - `--ticket KEY` records the ticket the workspace serves. Inside any workspace,
   `python .ai/wr.py ticket start KEY "title"` creates `feat/KEY-title`; `checkpoint.py` adds
-  `Refs: KEY` to every commit on it, and the commit check warns when it is missing.
+  `Refs: KEY` to every commit on it, and the commit check warns when it is missing. With GitHub
+  Issues, issue #42's key is `GH-42`, which GitHub links like `#42`.
 - Task and project workspaces get `.github/workflows/workrealm.yml`: on every push and pull
   request it runs `python .ai/policy.py ci`, which re-checks the pushed commits (a commit made
   with `--no-verify` fails there) and the whole tree for secrets. It needs no secrets.

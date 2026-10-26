@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.11.0 — 2026-10-26
+
+Adopting a real repository: its names, its branches and the machines it runs on.
+
+- **`names --style --rewrite-refs`.** `--style` applies the R-NAMES default (lowercase ASCII
+  kebab-case) to documents, figures and the folders that hold only those; code, and folders with
+  code, keep their language's style. `--rewrite-refs` updates every `[[wikilink]]` (aliases and
+  headings kept), Markdown link, canvas path and quoted path, keeps CRLF files CRLF, and refuses the
+  whole rename when a link would break (a write-once file that still names it); `--force`
+  overrides. `PATH ...` and `--keep GLOB` scope a run, so a large tree goes in batches.
+- **A failed automatic push is no longer silent.** The post-commit hook keeps the error in
+  `.git/workrealm-push.log`; the status and the session start print it, `wr doctor` warns and
+  `--fix` pushes and clears it.
+- **R-BRANCH: one short-lived branch per piece of work; parallel work in a worktree under
+  `.claude/worktrees/` only** (now ignored). Merging is not finishing: the open steps stay in the
+  plan. `wr doctor` lists merged branches (deleting stays the owner's call) and worktrees outside
+  that folder or gone from disk (`--fix` prunes those).
+- **`wr doctor` knows its machine.** It detects platform (Windows, Linux, WSL, macOS), container and
+  host, or takes `WORKREALM_ENV`, and checks the matching entry of the optional `environments` list
+  in `.workrealm.json`: the tools it needs on `PATH` and the services it must reach.
+- **GitHub Issues as tickets:** issue #42's key is `GH-42` (GitHub links it like `#42`), so
+  `ticket start GH-42 "title"` and the `Refs:` trailer work unchanged.
+
 ## 0.10.0 — 2026-10-26
 
 Names follow the standard of what they name, instead of one style for everything.

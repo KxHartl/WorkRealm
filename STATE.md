@@ -1,8 +1,8 @@
 # STATE — WorkRealm
 
-- **Version:** 0.10.0 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
+- **Version:** 0.11.0 · **Repo:** <https://github.com/KxHartl/WorkRealm> (private)
 - **Owner:** KxHartl, who picks and approves each release
-- **Phase:** 0.10.0 (R-NAMES: names follow the standard of what they name) is done. Waiting for the owner's review.
+- **Phase:** 0.11.0 (adopting real repositories: `names --style --rewrite-refs`, push-failure log, R-BRANCH worktrees, environments in doctor) is on branch `feat/adoption-support`, waiting for the owner's review. 0.10.0 is on `main`.
 - **Pairs with:** AgentBrain 2.6.0 (`15c62be`): work agents for the 0.5.0 layout, and the RAG MCP
   server that `--with rag` starts.
 
@@ -46,8 +46,9 @@ AgentBrain. The goals and the design are in `docs/DESIGN.md`.
 
 - **`core.hooksPath` is local config.** A fresh clone needs `python .ai/wr.py init` once (or `wr doctor --fix`);
   the session status says when the hooks are off.
-- **Pushes fail silently.** The post-commit push runs in the background with its output thrown
-  away, so a failed push makes no noise. `wr doctor` reports unpushed commits, and `--fix` pushes them.
+- **Pushes run in the background.** Since 0.11.0 a failed one is kept in `.git/workrealm-push.log`
+  and shown by the status, session start and `wr doctor` (`--fix` pushes). `git status` right after a
+  commit can still say "ahead" before the push lands.
 - **Keep tool files ASCII-safe.** Hook messages stay ASCII, and the Croatian letters in `policy.py`
   must stay `\u` escapes. The file-writing tool has turned them into literal letters twice;
   `test_scaffold_passes_its_own_checks_silently` catches it.
