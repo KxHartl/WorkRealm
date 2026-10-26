@@ -20,6 +20,9 @@ Adopting a real repository: its names, its branches and the machines it runs on.
 - **`wr doctor` knows its machine.** It detects platform (Windows, Linux, WSL, macOS), container and
   host, or takes `WORKREALM_ENV`, and checks the matching entry of the optional `environments` list
   in `.workrealm.json`: the tools it needs on `PATH` and the services it must reach.
+- **`adopt --role ROLE=PATH`** (repeatable) sets where a role lives when the guess is wrong, e.g.
+  `--role inbox=data/staging --role sources_log=data/SOURCES_LOG.md`; the dry run marks it `given`.
+- The large-file check skips files in Git LFS: the history carries a pointer, not the file.
 - **GitHub Issues as tickets:** issue #42's key is `GH-42` (GitHub links it like `#42`), so
   `ticket start GH-42 "title"` and the `Refs:` trailer work unchanged.
 

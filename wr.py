@@ -942,7 +942,10 @@ def hygiene(dest: Path, tracked: list[str], lay: dict) -> list[str]:
     out = [f"tracked: {g}, {n} file(s). Untrack and ignore it: git rm -r --cached <path>, then add it to "
            ".gitignore" for g, n in sorted(groups.items())]
     large = []
+    lfs = set(git(dest, "lfs", "ls-files", "--name-only", check=False).stdout.splitlines())         if shutil.which("git-lfs") else set()
     for t in tracked:
+        if t in lfs:  # in Git LFS: the history carries a pointer, not the file
+            continue
         try:
             size = (dest / t).stat().st_size
         except OSError:
@@ -1058,11 +1061,15 @@ def entries(dest: Path, rel: str) -> list[str]:
     return [p.name for p in folder.iterdir() if p.name not in STRUCTURAL and not p.name.startswith(".")]
 
 
-def detect_layout(dest: Path, tracked: list[str]) -> tuple[dict, dict]:
+def detect_layout(dest: Path, tracked: list[str], given: dict | None = None) -> tuple[dict, dict]:
     """Map existing folders onto roles. Returns (layout, how each role was found). A folder
-    counts only if it holds tracked files: build output such as an ignored dist/ is not a role."""
-    lay, found = {}, {}
+    counts only if it holds tracked files: build output such as an ignored dist/ is not a role.
+    `given` (adopt --role ROLE=PATH) wins over every guess."""
+    lay, found, given = {}, {}, given or {}
     for role, options in CANDIDATES.items():
+        if role in given:
+            lay[role], found[role] = given[role], "given"
+            continue
         for option in options:
             path = expand(option, lay) if "{" in option else option
             if (dest / path).is_dir() and any(t.startswith(path + "/") for t in tracked):
@@ -1078,9 +1085,10 @@ def detect_layout(dest: Path, tracked: list[str]) -> tuple[dict, dict]:
             if role == "inbox":
                 default = f"{lay['sources']}/inbox"
             lay[role], found[role] = default, "new"
-    log = next((f"{lay['sources']}/{n}" for n in ("SOURCES_LOG.md", "LOG.md", "SOURCES.md")
-                if (dest / lay["sources"] / n).is_file()), f"{lay['sources']}/SOURCES_LOG.md")
-    lay["sources_log"], found["sources_log"] = log, "found" if (dest / log).exists() else "new"
+    log = given.get("sources_log") or next((f"{lay['sources']}/{n}" for n in ("SOURCES_LOG.md", "LOG.md", "SOURCES.md")
+                                            if (dest / lay["sources"] / n).is_file()), f"{lay['sources']}/SOURCES_LOG.md")
+    lay["sources_log"] = log
+    found["sources_log"] = "given" if "sources_log" in given else "found" if (dest / log).exists() else "new"
     return {k: lay[k] for k in LAYOUT}, found
 
 
@@ -1215,7 +1223,13 @@ def cmd_adopt(args: argparse.Namespace) -> None:
     tracked = [t for t in git(dest, "ls-files", "-z", check=False).stdout.split("\0") if t] if is_repo else \
         [p.relative_to(dest).as_posix() for p in dest.rglob("*")
          if p.is_file() and not (set(p.relative_to(dest).parts) & (IGNORED_DIRS | {".git"}))]
-    lay, found = detect_layout(dest, tracked)
+    given = {}
+    for item in args.role:
+        role, sep, path = item.partition("=")
+        if not sep or role not in LAYOUT or not path.strip("/"):
+            die(f"--role {item!r}: use ROLE=PATH with a role from {', '.join(LAYOUT)}")
+        given[role] = path.replace("\\", "/").strip("/")
+    lay, found = detect_layout(dest, tracked, given)
     overrides, relaxed, naming_notes = infer_naming(dest, lay)
     meta = {"name": dest.name, "created": dt.date.today().isoformat(), "lang": args.lang,
             "adopted": dt.date.today().isoformat(), "naming_overrides": overrides, "naming_relaxed": relaxed,
@@ -1247,7 +1261,8 @@ def cmd_adopt(args: argparse.Namespace) -> None:
     print(f"{'Dry run: ' if args.dry_run else ''}adopting {dest} at the {tier} tier. Nothing is moved.\n")
     print("Roles:")
     for role in roles:
-        print(f"  {role:<15}{lay[role]:<32}{'found' if found[role] == 'found' else 'created'}")
+        how = {"found": "found", "given": "given (--role)"}.get(found[role], "created")
+        print(f"  {role:<15}{lay[role]:<32}{how}")
     print(f"\nAdded ({len(added)}):" + "".join(f"\n  + {a}" for a in added if not a.startswith(TOOL_OWNED))
           + f"\n  + {sum(1 for a in added if a.startswith(TOOL_OWNED))} tool files in .ai/, .githooks/, .claude/skills/")
     print("Changed:" + "".join(f"\n  {c}" for c in changed))
@@ -1355,6 +1370,8 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("--tier", choices=TIERS, default=DEFAULT_TIER)
     a.add_argument("--lang", choices=sorted(CHAT_LANG), default="match")
     a.add_argument("--dry-run", action="store_true", help="show what would change; write nothing")
+    a.add_argument("--role", action="append", default=[], metavar="ROLE=PATH",
+                   help="where a role lives when the guess is wrong (repeatable), e.g. inbox=data/staging")
     a.set_defaults(func=cmd_adopt)
 
     args = p.parse_args(argv)

@@ -167,6 +167,7 @@ wr adopt PATH [--tier quick|task|project] [--dry-run]
   - the repository's own hooks in `.git/hooks` keep running: WorkRealm's hooks call the one of the
     same name, and any other gets a forwarder in `.githooks/`.
 
+  `--role ROLE=PATH` (repeatable) overrides a wrong guess, e.g. `--role inbox=data/staging`.
   `--dry-run` shows all of this and writes nothing. A folder without Git first gets a baseline
   commit of what is already there; its virtualenvs and build output are ignored before that.
 

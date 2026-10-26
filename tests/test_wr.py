@@ -1017,6 +1017,20 @@ class TestAdopt(Base):
         write(folder / "decisions" / "0004-other.md", (folder / "decisions" / "ADR-003-cache-layer.md").read_text())
         self.assertIn("R-PLACE", commit(folder, "docs: adr", "why").stderr)  # the folder's own style holds
 
+    def test_role_overrides_the_guess(self):
+        folder = fixture_research_folder(self.tmp)
+        write(folder / "data" / "staging" / "x.pdf", "pdf")
+        write(folder / "data" / "LOG.md", "# Log\n")
+        r = run_wr("adopt", str(folder), "--tier", "project", "--dry-run", "--role", "inbox=data/staging",
+                   "--role", "sources_log=data/LOG.md", "--role", "plans=notes/plans")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"inbox\s+data/staging\s+given")
+        self.assertRegex(r.stdout, r"sources_log\s+data/LOG.md\s+given")
+        self.assertRegex(r.stdout, r"sources\s+literature\s+found")     # the rest is still guessed
+        bad = run_wr("adopt", str(folder), "--dry-run", "--role", "nonsense=x")
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("ROLE=PATH", bad.stderr)
+
     def test_upgrade_keeps_an_adopted_layout(self):
         folder = fixture_research_folder(self.tmp)
         self.assertEqual(run_wr("adopt", str(folder), "--tier", "task").returncode, 0)
