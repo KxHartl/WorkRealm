@@ -46,6 +46,16 @@ Names follow R-NAMES. Notes are dated, checked when added:
 Small edits go straight to `main`. Larger structural changes go on a `<type>/<short-desc>` branch (R-NAMES) and are merged
 when done, and pushed while in progress so nothing lives only on one disk.
 
+- **One branch per piece of work, short-lived.** Merge it within days; a branch nobody merges is
+  work `main` does not have. Merging does not mean the work is finished: the open steps stay in
+  its plan.
+- **Parallel work gets a worktree, and only under `.claude/worktrees/<branch>`** (ignored by Git),
+  one per branch: `git worktree add .claude/worktrees/feat-x -b feat/x`. Never a worktree beside
+  the repository or in another folder: nobody finds it again. Remove it when its branch is merged
+  (`git worktree remove`).
+- `wr doctor` lists branches already merged, worktrees outside `.claude/worktrees/` and worktrees
+  whose folder is gone. Deleting a branch is the owner's call.
+
 ## Long work and specialists
 
 > **R-LONG** · advisory

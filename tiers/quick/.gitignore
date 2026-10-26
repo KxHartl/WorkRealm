@@ -18,8 +18,9 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Claude Code — per-machine settings
+# Claude Code — per-machine settings, and worktrees for parallel work (R-BRANCH)
 .claude/settings.local.json
+.claude/worktrees/
 
 # Sync-tool artefacts are an alert, never content
 *conflicted copy*

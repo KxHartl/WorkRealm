@@ -97,7 +97,8 @@ When the work belongs to a ticket, its branch carries the key:
 `python .ai/wr.py ticket start ABC-123 "short title"` creates `feat/ABC-123-short-title`. Every
 commit on it ends with a `Refs: ABC-123` trailer, which `python .ai/checkpoint.py` adds; the
 commit check warns (never blocks) when it is missing. A workspace made for one ticket
-(`wr new --ticket ABC-123`) treats every branch as that ticket's.
+(`wr new --ticket ABC-123`) treats every branch as that ticket's. With GitHub Issues as the
+tracker, the key of issue #42 is `GH-42`: GitHub links `GH-42` to the issue like `#42`.
 
 ## Secrets never enter Git
 

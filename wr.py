@@ -648,7 +648,8 @@ class Doctor:
         checks = [self.check_meta, self.check_tooling, self.check_settings, self.check_rules,
                   self.check_integrations]
         if not self.ci:  # local state a fresh CI checkout does not have
-            checks += [self.check_hooks, self.check_remote, self.check_tree, self.check_brain]
+            checks += [self.check_hooks, self.check_remote, self.check_tree, self.check_branches,
+                       self.check_environment, self.check_brain]
         checks += [self.check_secrets, self.check_hygiene, self.check_policy]
         for check in checks:
             check()
@@ -796,6 +797,66 @@ class Doctor:
         else:
             self.report("OK", "work tree", "clean")
 
+    def check_branches(self):
+        """R-BRANCH: worktrees only under .claude/worktrees/, and no merged branch left behind."""
+        found, prunable = [], False
+        home = (self.dest / WORKTREES).resolve()
+        entries = git(self.dest, "worktree", "list", "--porcelain", check=False).stdout.split("\n\n")
+        checked_out = set()
+        for i, entry in enumerate(e for e in entries if e.strip()):
+            fields = dict((ln.split(" ", 1) + [""])[:2] for ln in entry.splitlines())
+            if fields.get("branch"):
+                checked_out.add(fields["branch"].removeprefix("refs/heads/"))
+            if i == 0:
+                continue                                       # the main working tree
+            path = Path(fields.get("worktree", ""))
+            if "prunable" in fields:
+                prunable = True
+                found.append(f"worktree {path} is gone from disk")
+            elif home not in path.resolve().parents:
+                found.append(f"worktree {path} is outside {WORKTREES}/: move it "
+                             f"(git worktree move \"{path}\" {WORKTREES}/<branch>)")
+        default = next((b for b in ("main", "master") if git(self.dest, "rev-parse", "--verify", "-q",
+                                                              f"refs/heads/{b}", check=False).returncode == 0), None)
+        if default:
+            merged = [b.strip() for b in git(self.dest, "branch", "--merged", default, "--format=%(refname:short)",
+                                             check=False).stdout.splitlines()]
+            merged = [b for b in merged if b and b != default and b not in checked_out]
+            if merged:
+                found.append(f"merged into {default}, still there: {', '.join(merged)}. If its work is done: "
+                             "git branch -d <branch> && git push origin --delete <branch> (the owner's call)")
+
+        def prune():
+            git(self.dest, "worktree", "prune", check=False)
+            return "pruned the worktrees whose folder is gone"
+        if found:
+            self.report("WARN", "branches", "\n".join(found), prune if prunable else None)
+        else:
+            self.report("OK", "branches", f"no merged branches left, worktrees only under {WORKTREES}/")
+
+    def check_environment(self):
+        """Which machine this is, and whether it has what the workspace needs there."""
+        here = detect_environment()
+        envs = self.meta.get("environments", [])
+        match = next((e for e in envs if environment_matches(e, here)), None)
+        label = f"{here['platform']}{', container' if here['container'] else ''} ({here['host']})"
+        if not envs:
+            self.report("OK", "environment", f"{label}; no environments declared in .workrealm.json")
+            return
+        if not match:
+            self.report("WARN", "environment", f"{label} matches none of the declared environments: "
+                        + ", ".join(e.get("name", "?") for e in envs))
+            return
+        missing = [t for t in match.get("tools", []) if not shutil.which(t)]
+        down = [s["name"] for s in match.get("services", []) if not reachable(s.get("url", ""))]
+        problems = ([f"tools not found: {', '.join(missing)}"] if missing else []) + \
+            ([f"services not reachable: {', '.join(down)}"] if down else [])
+        if problems:
+            self.report("WARN", "environment", f"{match['name']} -- {label}: " + "; ".join(problems)
+                        + (f". Setup: {match['setup']}" if match.get("setup") else ""))
+        else:
+            self.report("OK", "environment", f"{match['name']} -- {label}: tools and services in place")
+
     def check_brain(self):
         ok, status = sync_brain(self.dest, self.tier, dict(self.meta), check=True)
         if ok:
@@ -910,6 +971,48 @@ def untracked_junk(dest: Path, lay: dict) -> list[str]:
         else:
             dirs[:] = [d for d in dirs if d != ".git"]
     return out
+
+
+WORKTREES = ".claude/worktrees"  # R-BRANCH: the one place a worktree for parallel work lives
+
+
+def detect_environment() -> dict:
+    """The facts an environment in .workrealm.json is recognised by. WORKREALM_ENV names one
+    outright (a lab PC that looks like any other Linux machine)."""
+    import platform
+    import socket
+    plat = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    if plat == "linux" and "microsoft" in platform.release().lower():
+        plat = "wsl"
+    container = Path("/.dockerenv").exists() or Path("/run/.containerenv").exists() \
+        or bool(os.environ.get("REMOTE_CONTAINERS") or os.environ.get("CODESPACES"))
+    return {"platform": plat, "container": container, "host": socket.gethostname(),
+            "named": os.environ.get("WORKREALM_ENV", "")}
+
+
+def environment_matches(env: dict, here: dict) -> bool:
+    """Every key the environment sets must match; WORKREALM_ENV overrides them all."""
+    import fnmatch
+    if here["named"]:
+        return env.get("name") == here["named"]
+    return (env.get("platform") in (None, here["platform"])
+            and env.get("container", here["container"]) == here["container"]
+            and fnmatch.fnmatch(here["host"].lower(), env.get("host", "*").lower()))
+
+
+def reachable(url: str, timeout: float = 2.0) -> bool:
+    """A TCP connection to the service opens (no request is sent)."""
+    import socket
+    import urllib.parse
+    parts = urllib.parse.urlsplit(url if "://" in url else f"tcp://{url}")
+    port = parts.port or {"https": 443, "http": 80}.get(parts.scheme)
+    if not parts.hostname or not port:
+        return False
+    try:
+        with socket.create_connection((parts.hostname, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -1054,7 +1157,7 @@ def misfits(dest: Path, meta: dict, tracked: list[str]) -> list[str]:
 
 
 GITIGNORE_BLOCK = ["# WorkRealm: secrets, per-machine files and build output", ".env", "*.pem", "*.key", "id_rsa*",
-                   ".claude/settings.local.json", "__pycache__/", "*conflicted copy*"]
+                   ".claude/settings.local.json", ".claude/worktrees/", "__pycache__/", "*conflicted copy*"]
 # core.hooksPath = .githooks silences .git/hooks. WorkRealm's own hooks call the local hook of
 # the same name; any other local hook gets a forwarder, so `adopt` switches nothing off.
 FORWARDER = """#!/bin/sh

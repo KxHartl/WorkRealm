@@ -797,6 +797,49 @@ class TestDoctor(Base):
         self.assertFalse(log.exists())
         self.assertNotIn("LAST PUSH FAILED", helper(ws, "status").stdout)
 
+    def test_merged_branches_and_stray_worktrees_are_reported(self):
+        ws = self.new("d5c", "--quick")
+        self.assertTrue(row(doctor(ws).stdout, "branches").startswith("OK"))
+        subprocess.run(["git", "switch", "-q", "-c", "feat/done"], cwd=ws, check=True)
+        write(ws / "a.txt", "x")
+        self.assertEqual(commit(ws, "feat: a").returncode, 0)
+        subprocess.run(["git", "switch", "-q", "main"], cwd=ws, check=True)
+        subprocess.run(["git", "merge", "-q", "feat/done"], cwd=ws, check=True)
+        git(ws, "worktree", "add", "-q", str(self.tmp / "beside"), "-b", "feat/beside")
+        git(ws, "worktree", "add", "-q", ".claude/worktrees/feat-ok", "-b", "feat/ok")
+        git(ws, "worktree", "add", "-q", ".claude/worktrees/feat-gone", "-b", "feat/gone")
+        shutil.rmtree(ws / ".claude" / "worktrees" / "feat-gone")
+        r = doctor(ws)
+        self.assertTrue(row(r.stdout, "branches").startswith("WARN"), r.stdout)
+        self.assertIn("merged into main, still there: feat/done", r.stdout)
+        self.assertIn("beside is outside .claude/worktrees/", r.stdout)
+        self.assertIn("feat-gone is gone from disk", r.stdout)
+        self.assertNotIn("feat-ok is", r.stdout)
+        self.assertNotIn("??", git(ws, "status", "--porcelain"))          # worktrees are ignored
+        doctor(ws, "--fix")
+        self.assertNotIn("feat-gone", git(ws, "worktree", "list"))
+        self.assertIn("feat/done", git(ws, "branch"))                      # deleting stays the owner's call
+
+    def test_environment_is_detected_and_checked(self):
+        ws = self.new("d5d", "--quick")
+        self.assertIn("no environments declared", row(doctor(ws).stdout, "environment"))
+        meta_path = ws / ".workrealm.json"
+        meta = json.loads(meta_path.read_text())
+        meta["environments"] = [
+            {"name": "this-machine", "tools": ["git", "no-such-tool-x"],
+             "services": [{"name": "nothing-here", "url": "tcp://127.0.0.1:1"}], "setup": "setup-this.sh"},
+            {"name": "lab-pc", "host": "no-such-host-*"},
+        ]
+        write(meta_path, json.dumps(meta, indent=2) + "\n")
+        r = doctor(ws)
+        line = row(r.stdout, "environment")
+        self.assertTrue(line.startswith("WARN"), r.stdout)
+        for text in ("this-machine", "no-such-tool-x", "nothing-here", "setup-this.sh"):
+            self.assertIn(text, line)
+        named = run_wr("doctor", "--path", str(ws), env={**NO_BRAIN, "WORKREALM_ENV": "lab-pc"})
+        self.assertTrue(row(named.stdout, "environment").startswith("OK"), named.stdout)
+        self.assertIn("lab-pc", row(named.stdout, "environment"))
+
     def test_existing_violations_are_reported_not_blocking(self):
         ws = self.new("d6")
         write(ws / "docs" / "notes" / "Random.md", "x")
