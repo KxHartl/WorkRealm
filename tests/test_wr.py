@@ -651,6 +651,16 @@ class TestBrainSync(Base):
                            cwd=ws, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_agent_namespaces_choose_which_agents_a_workspace_keeps(self):
+        ws = self.new_ws("b6")
+        write(self.brain / "agents" / "writer.md", AGENT_SRC.format(name="writer", tiers="[task]"))
+        meta_path = ws / ".workrealm.json"
+        meta = json.loads(meta_path.read_text())
+        meta["agent_namespaces"] = ["work", "."]
+        write(meta_path, json.dumps(meta, indent=2) + "\n")
+        self.assertEqual(run_wr("sync", "--path", str(ws), env=self.env).returncode, 0)
+        self.assertEqual(sorted(p.stem for p in (ws / ".claude" / "agents").glob("*.md")), ["researcher", "writer"])
+
     def test_brain_that_needs_a_newer_workrealm_is_refused(self):
         (self.brain / "manifest.yaml").write_text('version: "9.2.0"\nmin_workrealm_version: "99.0.0"\n')
         r = run_wr("new", "b5", "--dir", str(self.tmp), "--no-remote", env=self.env)

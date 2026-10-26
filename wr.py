@@ -451,6 +451,13 @@ def brain_manifest(brain: Path) -> dict[str, str]:
     return dict(re.findall(r'^([a-z_]+):[ \t]*"?([^"#\n]+?)"?[ \t]*(?:#.*)?$', text, re.M))
 
 
+def agent_namespaces(meta: dict) -> str:
+    """Which AgentBrain agent folders a workspace takes: `agent_namespaces` in .workrealm.json,
+    else the work agents. "." is the brain's top-level agents/ (the academic specialists)."""
+    names = meta.get("agent_namespaces") or [BRAIN_NAMESPACE]
+    return ",".join("." if n in ("", ".") else n for n in names)
+
+
 def sync_brain(dest: Path, tier: str, meta: dict, check: bool = False) -> tuple[bool, str]:
     """Sync work agents and skills from AgentBrain at this tier; stamp the brain version
     into meta. Returns (ok, summary). A missing brain is a warning, not an error: a
@@ -469,7 +476,7 @@ def sync_brain(dest: Path, tier: str, meta: dict, check: bool = False) -> tuple[
     flags = ["--check"] if check else []
     runs = [
         subprocess.run([sys.executable, str(scripts / "sync_agents.py"), "--project-root", str(dest),
-                        "--namespace", BRAIN_NAMESPACE, "--tier", tier, "--prune", *flags],
+                        "--namespace", agent_namespaces(meta), "--tier", tier, "--prune", *flags],
                        capture_output=True, text=True),
         subprocess.run([sys.executable, str(scripts / "sync_skills.py"), "--project-root", str(dest),
                         "--tier", tier, "--prune", *flags], capture_output=True, text=True),

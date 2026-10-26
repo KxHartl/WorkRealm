@@ -22,6 +22,9 @@ Adopting a real repository: its names, its branches and the machines it runs on.
   in `.workrealm.json`: the tools it needs on `PATH` and the services it must reach.
 - **`adopt --role ROLE=PATH`** (repeatable) sets where a role lives when the guess is wrong, e.g.
   `--role inbox=data/staging --role sources_log=data/SOURCES_LOG.md`; the dry run marks it `given`.
+- **`agent_namespaces`** in `.workrealm.json` chooses which AgentBrain agent folders a workspace
+  syncs (default `["work"]`; `"."` is the top-level academic specialists). Adopting a thesis
+  repository no longer prunes the agents it was working with.
 - The large-file check skips files in Git LFS: the history carries a pointer, not the file.
 - **GitHub Issues as tickets:** issue #42's key is `GH-42` (GitHub links it like `#42`), so
   `ticket start GH-42 "title"` and the `Refs:` trailer work unchanged.
