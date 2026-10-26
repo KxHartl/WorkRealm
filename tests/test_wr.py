@@ -1139,6 +1139,58 @@ class TestNames(Base):
         self.assertEqual(commit(ws, "chore: ascii names").returncode, 0)
         self.assertIn("keep", helper(ws, "names").stdout)
 
+    def test_style_renames_documents_and_rewrites_every_link(self):
+        ws = self.new("n7", "--quick")
+        write(ws / "notes" / "10_project" / "thesis_plan.md",
+              "---\naliases:\n  - EN 1\n---\nSee [[ops_log]] and [[10_project/thesis_plan|plan]].\n")
+        write(ws / "notes" / "ops_log.md", "Back to [[thesis_plan#Goal]], ![[fig_01.png]], "
+              "[x](10_project/thesis_plan.md), `notes/ops_log.md`, [[EN 1]], [[missing_note]].\n")
+        write(ws / "notes" / "fig_01.png", "png")
+        write(ws / "notes" / "README.md", "Start at [[ops_log]].\n")
+        write(ws / "notes" / "overview.canvas", '{"nodes": [{"file": "notes/10_project/thesis_plan.md"}]}\n')
+        write(ws / "notes" / "card_tools" / "make_cards.py", "SRC = 'notes/ops_log.md'\n")
+        write(ws / "notes" / "99_inbox" / "new_idea.md", "x\n")
+        write(ws / "src" / "data_loader.py", "x\n")
+        (ws / "run.ps1").write_bytes(b"Get-Content notes/ops_log.md\r\n")
+        self.assertEqual(commit(ws, "docs: vault").returncode, 0)
+        r = helper(ws, "names", "notes", "--style", "--rewrite-refs", "--keep", "notes/99_inbox")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("rename   notes/10_project/thesis_plan.md -> notes/10-project/thesis-plan.md", r.stdout)
+        self.assertIn("would be rewritten", r.stdout)
+        self.assertNotIn("src/", r.stdout)                                  # outside the scope
+        self.assertNotIn("rename   notes/card_tools", r.stdout)             # code keeps its style
+        self.assertTrue((ws / "notes" / "ops_log.md").exists())             # a listing changes nothing
+        r = helper(ws, "names", "notes", "--style", "--rewrite-refs", "--keep", "notes/99_inbox", "--fix")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for kept in ("notes/README.md", "notes/card_tools/make_cards.py", "src/data_loader.py"):
+            self.assertTrue((ws / kept).exists(), kept)
+        self.assertTrue((ws / "notes" / "99_inbox" / "new-idea.md").exists())
+        self.assertTrue((ws / "notes" / "fig-01.png").exists())
+        log = (ws / "notes" / "ops-log.md").read_text(encoding="utf-8")
+        for link in ("[[thesis-plan#Goal]]", "![[fig-01.png]]", "[x](10-project/thesis-plan.md)",
+                     "`notes/ops-log.md`", "[[EN 1]]", "[[missing_note]]"):
+            self.assertIn(link, log)
+        plan = (ws / "notes" / "10-project" / "thesis-plan.md").read_text(encoding="utf-8")
+        self.assertIn("[[ops-log]] and [[10-project/thesis-plan|plan]]", plan)
+        self.assertIn("notes/10-project/thesis-plan.md", (ws / "notes" / "overview.canvas").read_text())
+        self.assertIn("notes/ops-log.md", (ws / "notes" / "card_tools" / "make_cards.py").read_text())
+        self.assertIn(b"notes/ops-log.md\r\n", (ws / "run.ps1").read_bytes())  # CRLF kept
+        self.assertEqual(commit(ws, "docs: default names").returncode, 0)
+
+    def test_rewrite_refs_refuses_a_rename_that_breaks_a_link(self):
+        ws = self.new("n8")
+        write(ws / "references" / "reading_list.md", "Start with [[my_note]].\n")  # write-once: not rewritten
+        write(ws / "docs" / "my_note.md", "x\n")
+        subprocess.run(["git", "add", "-A"], cwd=ws)
+        subprocess.run(["git", "commit", "-q", "--no-verify", "-m", "docs: notes"], cwd=ws, check=True)
+        r = helper(ws, "names", "docs", "--style", "--rewrite-refs", "--fix")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("broken   references/reading_list.md: [[my_note]]", r.stdout)
+        self.assertTrue((ws / "docs" / "my_note.md").exists())               # nothing renamed
+        r = helper(ws, "names", "docs", "--style", "--rewrite-refs", "--fix", "--force")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((ws / "docs" / "my-note.md").exists())
+
     def test_received_files_get_standard_names_and_keep_the_original_in_the_log(self):
         ws = self.new("n5")
         local = self.tmp / "Izvješće o stanju 2024.PDF"

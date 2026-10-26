@@ -6,7 +6,8 @@
     python .ai/wr.py checkpoint "type: msg" [body]
     python .ai/wr.py handoff                     before ending a session
     python .ai/wr.py ticket start KEY [TITLE] [--type fix]   a branch named after the ticket
-    python .ai/wr.py names [--fix]               names that break R-NAMES; --fix renames them (git mv)
+    python .ai/wr.py names [PATH ...] [--fix] [--style] [--rewrite-refs] [--keep GLOB]
+                                                 names that break R-NAMES; --fix renames them (git mv)
     python .ai/wr.py note TOPIC                  task+    a dated note in docs/notes/
     python .ai/wr.py source add URL --desc D [--file LOCAL] [--name NAME]
                                                  task+    save + log (project: into the inbox)
@@ -313,15 +314,164 @@ def mentions(old: str) -> list[str]:
     return out
 
 
+# `names --style` applies the R-NAMES default (lowercase ASCII kebab-case) to documents and
+# figures, whose standard is the default. Code keeps its language's style, and so does a folder
+# that holds code: an import or a build file may name it.
+DEFAULT_STYLE_EXT = {".md", ".tex", ".canvas", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".sh"}
+CODE_EXT = {".py", ".pyi", ".go", ".rs", ".c", ".h", ".cc", ".cpp", ".hpp", ".r", ".rb", ".sql", ".ps1",
+            ".psm1", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".cs", ".m", ".toml", ".yaml", ".yml",
+            ".json", ".xml", ".xacro", ".urdf", ".cmake", ".launch"}
+BUILD_FILES = {"CMakeLists.txt", "Makefile", "Dockerfile", "package.xml", "setup.py", "setup.cfg"}
+META_NAME = re.compile(r"^[A-Z0-9][A-Z0-9_-]*\.md$")  # STATE.md, SOURCES_LOG.md: names people look for
+REF_EXT = TEXT_EXT | {".canvas", ".tex", ".bib"}
+WIKILINK = re.compile(r"(!?\[\[)([^\]|#\n]+)")
+MD_LINK = re.compile(r"(\]\()([^)\s#]+)")
+STRUCTURAL_NAMES = {"README.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", "INDEX.md", "MANIFEST.md",
+                    "SUMMARY.md", "STATE.md", "TEMPLATE.md", "CHANGELOG.md", "LICENSE.md", "CONTRIBUTING.md"}
+ALIASES = re.compile(r"^aliases:\s*(?:\[(.*?)\]|((?:\n\s*-\s*.+)+))", re.M)
+
+
+def kebab(name: str) -> str:
+    """The R-NAMES default: lowercase ASCII kebab-case; the extension is kept, lowercased."""
+    suffix = Path(name).suffix if not name.startswith(".") else ""
+    stem = name[:len(name) - len(suffix)] if suffix else name
+    out = re.sub(r"[^a-z0-9.]+", "-", to_ascii(stem).lower()).strip("-")
+    return (out or stem) + suffix.lower()
+
+
+def code_dirs(paths: set[str]) -> set[str]:
+    """Folders with code or a build file anywhere below them."""
+    out = set()
+    for path in paths:
+        name = path.rsplit("/", 1)[-1]
+        if Path(name).suffix.lower() in CODE_EXT or name in BUILD_FILES:
+            parts = path.split("/")[:-1]
+            out.update("/".join(parts[:i + 1]) for i in range(len(parts)))
+    return out
+
+
+def better_name(path: str, style: bool, code: set[str], keep: list[str]) -> str:
+    """The name R-NAMES asks for: always safe on every system; with style, also the default
+    style for documents, figures and the folders that hold only those."""
+    import fnmatch
+    segments = path.split("/")
+    out = []
+    for i, s in enumerate(segments):
+        new = safe_name(s) or s
+        last = i == len(segments) - 1
+        here = "/".join(segments[:i + 1])
+        styled = style and not s.startswith(".") and not any(fnmatch.fnmatch(here, k) or fnmatch.fnmatch(s, k)
+                                                              for k in keep)
+        if styled and last:
+            styled = Path(s).suffix.lower() in DEFAULT_STYLE_EXT and s not in STRUCTURAL_NAMES \
+                and not META_NAME.match(s)
+        elif styled:
+            styled = here not in code
+        out.append(kebab(new) if styled else new)
+    return "/".join(out)
+
+
+def ref_maps(renames: list[tuple[str, str]]) -> tuple[dict, dict, list[str]]:
+    """What a reference to a renamed file or folder becomes: by name (with its extension, or a
+    folder), and by note stem (an Obsidian [[link]] leaves out .md). A rename is name-local, so
+    one old name always becomes one new name; when it does not (a kept twin), it is left alone."""
+    names, stems, clashes = {}, {}, set()
+    for old, new in renames:
+        for table, o, n in [(names, a, b) for a, b in zip(old.split("/"), new.split("/"))] + \
+                [(stems, Path(old).stem, Path(new).stem)] * (Path(old).suffix in (".md", ".canvas")):
+            if o == n:
+                continue
+            if table.get(o, n) != n:
+                clashes.add(o)
+            table[o] = n
+    for o in clashes:
+        names.pop(o, None)
+        stems.pop(o, None)
+    return names, stems, sorted(clashes)
+
+
+def map_target(target: str, names: dict, stems: dict) -> str:
+    """A link target with each renamed folder, file or note stem replaced."""
+    return "/".join(names.get(p) or stems.get(p) or p for p in target.split("/"))
+
+
+def rewrite_refs(text: str, names: dict, stems: dict) -> str:
+    """Point [[wikilinks]], Markdown links and quoted paths at the new names."""
+    text = WIKILINK.sub(lambda mt: mt.group(1) + map_target(mt.group(2), names, stems), text)
+    text = MD_LINK.sub(lambda mt: mt.group(0) if "://" in mt.group(2)
+                       else mt.group(1) + map_target(mt.group(2), names, stems), text)
+    files = sorted((k for k in names if Path(k).suffix), key=len, reverse=True)
+    if files:
+        text = re.sub(r"(?<![\w.-])(" + "|".join(map(re.escape, files)) + r")(?![\w-])",
+                      lambda mt: names[mt.group(1)], text)
+    folders = sorted((k for k in names if not Path(k).suffix), key=len, reverse=True)
+    if folders:
+        alt = "|".join(map(re.escape, folders))
+        text = re.sub(rf"(?<![\w.-])({alt})(?=/)|(?<=/)({alt})(?![\w.-])",
+                      lambda mt: names[mt.group(1) or mt.group(2)], text)
+    return text
+
+
+def broken_links(files: set[str], texts: dict[str, str]) -> set[tuple[str, str]]:
+    """[[wikilinks]] that resolve to no file, note or alias (Obsidian resolves by name)."""
+    known = {p.rsplit("/", 1)[-1].casefold() for p in files}
+    known |= {Path(p).stem.casefold() for p in files if Path(p).suffix in (".md", ".canvas")}
+    for text in texts.values():
+        for mt in ALIASES.finditer(text):
+            items = mt.group(1).split(",") if mt.group(1) is not None else re.findall(r"-\s*(.+)", mt.group(2))
+            known |= {i.strip().strip("'\"").casefold() for i in items}
+    out = set()
+    for path, text in texts.items():
+        if Path(path).suffix != ".md":
+            continue
+        for mt in WIKILINK.finditer(text):
+            target = mt.group(2).strip()
+            last = target.rsplit("/", 1)[-1].casefold()
+            if last and last not in known:
+                out.add((path, target))
+    return out
+
+
+def read_texts(paths: set[str]) -> dict[str, str]:
+    out = {}
+    for path in paths:
+        if Path(path).suffix.lower() in REF_EXT:
+            try:  # bytes, so a CRLF file keeps its line endings when it is written back
+                out[path] = (ROOT / path).read_bytes().decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+    return out
+
+
+def move(path: str, better: str, tracked: set[str]) -> str | None:
+    """Rename one file (git mv when tracked); the error, or None."""
+    (ROOT / better).parent.mkdir(parents=True, exist_ok=True)
+    if path in tracked:
+        r = git("mv", path, better)
+        if r.returncode != 0:
+            return r.stderr.strip()
+    else:
+        (ROOT / path).rename(ROOT / better)
+    for parent in (ROOT / path).parents:
+        if parent == ROOT or not parent.is_dir() or any(parent.iterdir()):
+            break
+        parent.rmdir()
+    return None
+
+
 def cmd_names(args) -> None:
-    """List the names that break R-NAMES; with --fix, rename those that can be renamed safely."""
+    """List the names that break R-NAMES; with --fix, rename those that can be renamed safely.
+    --style also applies the default style to documents; --rewrite-refs updates what links to them."""
     m = meta()
     tracked = {t for t in git("ls-files", "-z").stdout.split("\0") if t}
     paths = tracked | {t for t in git("ls-files", "-z", "--others", "--exclude-standard").stdout.split("\0") if t}
-    todo = 0
+    scope = [s.replace("\\", "/").strip("/") for s in args.paths]
+    code = code_dirs(paths) if args.style else set()
+    todo, planned, targets = 0, [], {}
     for path in sorted(paths):
-        segments = path.split("/")
-        better = "/".join(safe_name(s) or s for s in segments)
+        if scope and not any(path == s or path.startswith(s + "/") for s in scope):
+            continue
+        better = better_name(path, args.style, code, args.keep)
         problem = next((p for s in better.split("/") if (p := name_problem(s))), None)
         if better == path and not problem and path.isascii():
             continue
@@ -331,31 +481,65 @@ def cmd_names(args) -> None:
             print(f"by hand  {path}  ({problem or 'no ASCII form'})")
         elif committed and protected_by(m, path):
             print(f"keep     {path}  (write-once evidence: its name is part of the record)")
-        elif (ROOT / better).exists():
+        elif (ROOT / better).exists() and better.casefold() != path.casefold():
             print(f"by hand  {path}  ({better} already exists)")
-        elif not args.fix:
-            print(f"rename   {path} -> {better}")
+        elif better.casefold() in targets:
+            print(f"by hand  {path}  (so would {targets[better.casefold()]}: both become {better})")
         else:
-            (ROOT / better).parent.mkdir(parents=True, exist_ok=True)
-            if path in tracked:
-                r = git("mv", path, better)
-                if r.returncode != 0:
-                    print(f"by hand  {path}  ({r.stderr.strip()})")
-                    continue
-            else:
-                (ROOT / path).rename(ROOT / better)
-            for parent in (ROOT / path).parents:
-                if parent == ROOT or not parent.is_dir() or any(parent.iterdir()):
-                    break
-                parent.rmdir()
+            targets[better.casefold()] = path
+            planned.append((path, better))
+    if args.rewrite_refs and planned:
+        names, stems, clashes = ref_maps(planned)
+        texts = read_texts(paths)
+        moved = dict(planned)
+        after = {p: t if p in tracked and protected_by(m, p) else rewrite_refs(t, names, stems)
+                 for p, t in texts.items()}
+        before = {(moved.get(p, p), map_target(t, names, stems)) for p, t in broken_links(paths, texts)}
+        introduced = sorted(broken_links({moved.get(p, p) for p in paths},
+                                         {moved.get(p, p): t for p, t in after.items()}) - before)
+        changed = sorted(moved.get(p, p) for p, t in after.items() if t != texts[p])
+        if clashes:
+            print(f"refs     left alone, one old name becomes two new ones: {', '.join(clashes)}")
+        if introduced:
+            for path, target in introduced[:20]:
+                print(f"broken   {path}: [[{target}]]")
+            if not args.force:
+                die(f"{len(introduced)} link(s) would break: nothing renamed. Rename by hand, add --keep, "
+                    "or pass --force.")
+        print(f"refs     {len(changed)} file(s) {'rewritten' if args.fix else 'would be rewritten'}"
+              + (f": {', '.join(changed[:10])}" + (f" (+{len(changed) - 10} more)" if len(changed) > 10 else "")
+                 if changed else ""))
+    if not args.fix:
+        for path, better in planned:
+            print(f"rename   {path} -> {better}")
+    else:
+        done = []
+        for path, better in planned:
+            error = move(path, better, tracked)
+            if error:
+                print(f"by hand  {path}  ({error})")
+                continue
+            done.append((path, better))
             print(f"renamed  {path} -> {better}")
-            stale = mentions(Path(path).name)
-            if stale:
-                print(f"         still named in: {', '.join(stale)}")
+        if args.rewrite_refs and done:
+            names, stems, _ = ref_maps(done)
+            moved = dict(done)
+            for path, text in read_texts({moved.get(p, p) for p in paths}).items():
+                if path in tracked and protected_by(m, path):
+                    continue
+                new = rewrite_refs(text, names, stems)
+                if new != text:
+                    (ROOT / path).write_bytes(new.encode("utf-8"))
+        elif done:
+            for path, _ in done:
+                stale = mentions(Path(path).name)
+                if stale:
+                    print(f"         {path} still named in: {', '.join(stale)}")
     if not todo:
         print("every name follows R-NAMES")
-    elif not args.fix:
-        print("python .ai/wr.py names --fix renames what is listed as `rename`.")
+    elif not args.fix and planned:
+        print("python .ai/wr.py names --fix renames what is listed as `rename`"
+              + (" (--rewrite-refs also updates the links to it)." if not args.rewrite_refs else "."))
 
 
 # ---------------------------------------------------------------- task tier
@@ -590,7 +774,15 @@ def main(argv: list[str] | None = None) -> None:
     ts.add_argument("--type", default="feat", choices=["feat", "fix", "docs", "chore", "refactor", "test"])
     ts.set_defaults(func=cmd_ticket_start)
     nm = sub.add_parser("names", help="names that break R-NAMES (ASCII, no spaces, safe on every system)")
+    nm.add_argument("paths", nargs="*", help="only these files or folders")
     nm.add_argument("--fix", action="store_true", help="rename them with git mv")
+    nm.add_argument("--style", action="store_true",
+                    help="also give documents, figures and their folders the default style (kebab-case)")
+    nm.add_argument("--rewrite-refs", action="store_true",
+                    help="update [[wikilinks]], Markdown links and quoted paths; refuse if a link would break")
+    nm.add_argument("--keep", action="append", default=[], metavar="GLOB",
+                    help="a path or name that keeps its name (repeatable), e.g. a folder a tool's config names")
+    nm.add_argument("--force", action="store_true", help="rename even if a link would break")
     nm.set_defaults(func=cmd_names)
 
     n = sub.add_parser("note", help="new dated note")
