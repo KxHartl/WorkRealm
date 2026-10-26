@@ -107,6 +107,7 @@ NAMING = {
 # current checks. Everything else is the user's and is never overwritten.
 TOOL_OWNED = (".ai/", ".githooks/", ".claude/skills/", ".github/workflows/workrealm.yml")
 HOOKS_PATH = ".githooks"
+PUSH_LOG = "workrealm-push.log"  # in .git/: the post-commit hook keeps a failed push here
 SHIMS = {"CLAUDE.md": "@AGENTS.md", "GEMINI.md": "@./AGENTS.md"}
 STRUCTURAL = {"README.md", ".gitkeep", "TEMPLATE.md", "INDEX.md"}
 TICKET = re.compile(r"[A-Z][A-Z0-9]+-\d+")
@@ -771,7 +772,16 @@ class Doctor:
             if p.returncode:
                 raise RuntimeError(p.stderr.strip())
             return f"pushed {branch}"
-        if r.returncode != 0:
+        log = Path(git(self.dest, "rev-parse", "--absolute-git-dir", check=False).stdout.strip()) / PUSH_LOG
+        if log.is_file():
+            def push_and_clear():
+                done = push()
+                log.unlink()
+                return done
+            failed = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+            self.report("WARN", "remote", "the last automatic push failed; the commits are on this disk only:\n"
+                        + "\n".join(failed[:6]), push_and_clear)
+        elif r.returncode != 0:
             self.report("WARN", "remote", f"{branch} has no upstream: the post-commit push may not land", push)
         elif int(r.stdout.strip() or 0):
             self.report("WARN", "remote", f"{r.stdout.strip()} commit(s) on {branch} not on the remote", push)

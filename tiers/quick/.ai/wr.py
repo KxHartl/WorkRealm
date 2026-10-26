@@ -176,6 +176,15 @@ def git_summary() -> dict:
     return {"branch": branch, "dirty": dirty, "remote": remote, "unpushed": unpushed}
 
 
+def push_failure() -> str | None:
+    """What the post-commit hook kept from its last push, if that push failed."""
+    git_dir = git("rev-parse", "--absolute-git-dir").stdout.strip()
+    try:
+        return (Path(git_dir) / "workrealm-push.log").read_text(encoding="utf-8", errors="replace").strip() or None
+    except OSError:
+        return None
+
+
 def phase() -> str | None:
     try:
         m = re.search(r"\*\*Phase:\*\*\s*([^\n·]+)", (ROOT / "STATE.md").read_text(encoding="utf-8"))
@@ -192,6 +201,10 @@ def status_text() -> str:
     lines = [f"WorkRealm workspace '{m.get('name', ROOT.name)}' -- tier {m.get('tier', '?')}, "
              f"WorkRealm {m.get('workrealm_version', '?')}",
              f"Git: {g['branch']}, {g['dirty']} uncommitted, {pushed}"]
+    failed = push_failure()
+    if failed:
+        lines.append("LAST PUSH FAILED -- these commits exist on this disk only. Fix the cause, then "
+                     "`git push`:\n  " + "\n  ".join(failed.splitlines()[:6]))
     if from_template(m):
         lines.append(f"Made from the template '{m['name']}': python .ai/wr.py init names it '{ROOT.name}' "
                      "and turns the git hooks on")

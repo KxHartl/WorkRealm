@@ -2,8 +2,17 @@
 # Installed by WorkRealm (core.hooksPath = .githooks). Push every commit at once:
 # a local-only commit is one disk failure from gone. Silent no-op without a remote.
 # A hook the repository already had in .git/hooks still runs: core.hooksPath would silence it.
+# The push runs in the background; a failure is kept in .git/workrealm-push.log, which the
+# status, the session start and `wr doctor` show until a push succeeds.
 LOCAL="$(git rev-parse --git-common-dir)/hooks/post-commit"
 if [ -x "$LOCAL" ]; then "$LOCAL" "$@"; fi
 git remote get-url origin >/dev/null 2>&1 || exit 0
 branch=$(git symbolic-ref --short -q HEAD) || exit 0
-git push -q origin "$branch" >/dev/null 2>&1 &
+LOG="$(git rev-parse --git-dir)/workrealm-push.log"
+(
+  if out=$(git push -q origin "$branch" 2>&1); then
+    rm -f "$LOG"
+  else
+    printf '%s push of %s failed:\n%s\n' "$(date '+%Y-%m-%d %H:%M')" "$branch" "$out" > "$LOG"
+  fi
+) >/dev/null 2>&1 &

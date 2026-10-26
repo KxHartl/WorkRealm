@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -776,6 +777,25 @@ class TestDoctor(Base):
         fixed = doctor(ws, "--fix")
         self.assertTrue(row(fixed.stdout, "remote").startswith("FIXED"), fixed.stdout)
         self.assertTrue(row(doctor(ws).stdout, "remote").startswith("OK"))
+
+    def test_a_failed_automatic_push_is_kept_and_shown_until_a_push_lands(self):
+        ws = self.new("d5b")
+        remote = self.tmp / "later.git"                      # not there yet: the push fails
+        git(ws, "remote", "add", "origin", str(remote))
+        write(ws / "a.txt", "x")
+        self.assertEqual(commit(ws, "feat: a").returncode, 0)
+        log = ws / ".git" / "workrealm-push.log"
+        for _ in range(100):                                 # the hook pushes in the background
+            if log.exists() and log.read_text(encoding="utf-8").strip():
+                break
+            time.sleep(0.1)
+        self.assertIn("failed", log.read_text(encoding="utf-8"))
+        self.assertIn("LAST PUSH FAILED", helper(ws, "status").stdout)
+        self.assertIn("last automatic push failed", row(doctor(ws).stdout, "remote"))
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        self.assertTrue(row(doctor(ws, "--fix").stdout, "remote").startswith("FIXED"))
+        self.assertFalse(log.exists())
+        self.assertNotIn("LAST PUSH FAILED", helper(ws, "status").stdout)
 
     def test_existing_violations_are_reported_not_blocking(self):
         ws = self.new("d6")
