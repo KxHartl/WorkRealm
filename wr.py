@@ -82,7 +82,7 @@ CHAT_LANG = {
 
 # Which .ai/policy.py checks run, per tier. Each tier adds; none removes or renames.
 CHECKS = {
-    "quick": ["secrets", "commit_msg", "english", "ticket_ref"],
+    "quick": ["secrets", "commit_msg", "english", "ticket_ref", "names"],
     "task": ["protected_paths", "sources_logged", "naming", "decision_register", "decision_commit_body"],
     "project": ["zone_placement", "adr_format", "inbox"],
 }

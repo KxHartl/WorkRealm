@@ -12,7 +12,7 @@
 | `reports/` | Deliverables being written: reports, memos, slides, figures | Free to edit |
 
 **A document lives in exactly one place.** Move it with `git mv`; never keep two copies.
-Names are lowercase kebab-case. Notes are dated, checked when added:
+Names follow R-NAMES. Notes are dated, checked when added:
 `docs/notes/2026-10-12-vendor-comparison.md`. `python .ai/wr.py note "<topic>"` names it for you.
 
 ## Sources are evidence
@@ -43,7 +43,7 @@ Names are lowercase kebab-case. Notes are dated, checked when added:
 
 > **R-BRANCH** · advisory
 
-Small edits go straight to `main`. Larger structural changes go on `ai/<feature>` and are merged
+Small edits go straight to `main`. Larger structural changes go on a `<type>/<short-desc>` branch (R-NAMES) and are merged
 when done, and pushed while in progress so nothing lives only on one disk.
 
 ## Long work and specialists

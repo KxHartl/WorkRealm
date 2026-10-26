@@ -6,6 +6,7 @@
     python .ai/wr.py checkpoint "type: msg" [body]
     python .ai/wr.py handoff                     before ending a session
     python .ai/wr.py ticket start KEY [TITLE] [--type fix]   a branch named after the ticket
+    python .ai/wr.py names [--fix]               names that break R-NAMES; --fix renames them (git mv)
     python .ai/wr.py note TOPIC                  task+    a dated note in docs/notes/
     python .ai/wr.py source add URL --desc D [--file LOCAL] [--name NAME]
                                                  task+    save + log (project: into the inbox)
@@ -38,7 +39,8 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from policy import TICKET_KEY, active_ticket, layout  # noqa: E402
+from policy import (TEXT_EXT, TICKET_KEY, active_ticket, layout, name_problem, protected_by,  # noqa: E402
+                    safe_name, to_ascii)
 
 ROOT = Path(__file__).resolve().parent.parent
 TIERS = ("quick", "task", "project")
@@ -83,10 +85,19 @@ def today() -> str:
 
 
 def slug(text: str) -> str:
-    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    s = re.sub(r"[^a-z0-9]+", "-", to_ascii(text).lower()).strip("-")
     if not s:
         die(f"cannot make a file name from {text!r}; use letters or digits")
     return s[:60].rstrip("-")
+
+
+def intake_name(name: str) -> str:
+    """A received file's name made standard (R-NAMES): ASCII, lowercase kebab-case, lowercase
+    extension. `Izvjesce o stanju 2024.PDF` -> `izvjesce-o-stanju-2024.pdf`."""
+    stem, dot, ext = name.rpartition(".") if "." in name.lstrip(".") else (name, "", "")
+    stem = re.sub(r"-*\.-*", ".", re.sub(r"[^a-z0-9.]+", "-", to_ascii(stem).lower())).strip("-.")
+    ext = re.sub(r"[^a-z0-9]", "", to_ascii(ext).lower())
+    return (stem or "download") + (f".{ext}" if ext else "")
 
 
 def rel(path: Path) -> str:
@@ -288,6 +299,65 @@ def cmd_ticket_start(args) -> None:
     print(f"on branch {name}. Commits made with python .ai/checkpoint.py end with `Refs: {key}`.")
 
 
+def mentions(old: str) -> list[str]:
+    """Tracked text files that still name `old` (links and imports a rename leaves behind)."""
+    out = []
+    for path in git("ls-files", "-z").stdout.split("\0"):
+        file = ROOT / path
+        if path and Path(path).suffix in TEXT_EXT and file.is_file():
+            try:
+                if old in file.read_text(encoding="utf-8"):
+                    out.append(path)
+            except (OSError, UnicodeDecodeError):
+                continue
+    return out
+
+
+def cmd_names(args) -> None:
+    """List the names that break R-NAMES; with --fix, rename those that can be renamed safely."""
+    m = meta()
+    tracked = {t for t in git("ls-files", "-z").stdout.split("\0") if t}
+    paths = tracked | {t for t in git("ls-files", "-z", "--others", "--exclude-standard").stdout.split("\0") if t}
+    todo = 0
+    for path in sorted(paths):
+        segments = path.split("/")
+        better = "/".join(safe_name(s) or s for s in segments)
+        problem = next((p for s in better.split("/") if (p := name_problem(s))), None)
+        if better == path and not problem and path.isascii():
+            continue
+        todo += 1
+        committed = git("cat-file", "-e", f"HEAD:{path}").returncode == 0
+        if problem or better == path or not better.isascii():
+            print(f"by hand  {path}  ({problem or 'no ASCII form'})")
+        elif committed and protected_by(m, path):
+            print(f"keep     {path}  (write-once evidence: its name is part of the record)")
+        elif (ROOT / better).exists():
+            print(f"by hand  {path}  ({better} already exists)")
+        elif not args.fix:
+            print(f"rename   {path} -> {better}")
+        else:
+            (ROOT / better).parent.mkdir(parents=True, exist_ok=True)
+            if path in tracked:
+                r = git("mv", path, better)
+                if r.returncode != 0:
+                    print(f"by hand  {path}  ({r.stderr.strip()})")
+                    continue
+            else:
+                (ROOT / path).rename(ROOT / better)
+            for parent in (ROOT / path).parents:
+                if parent == ROOT or not parent.is_dir() or any(parent.iterdir()):
+                    break
+                parent.rmdir()
+            print(f"renamed  {path} -> {better}")
+            stale = mentions(Path(path).name)
+            if stale:
+                print(f"         still named in: {', '.join(stale)}")
+    if not todo:
+        print("every name follows R-NAMES")
+    elif not args.fix:
+        print("python .ai/wr.py names --fix renames what is listed as `rename`.")
+
+
 # ---------------------------------------------------------------- task tier
 
 def cmd_note(args) -> None:
@@ -299,8 +369,10 @@ def cmd_note(args) -> None:
 def cmd_source_add(args) -> None:
     need("task")
     staged = tier() == "project"  # project tier: agents stage, the owner promotes
-    name = args.name or (Path(args.file).name if args.file else
-                         Path(urllib.parse.urlparse(args.url).path).name) or "download"
+    received = (Path(args.file).name if args.file else
+                urllib.parse.unquote(Path(urllib.parse.urlparse(args.url).path).name)) or "download"
+    name = args.name or intake_name(received)
+    desc = args.desc + (f" (received as '{received}')" if not args.name and name != received else "")
     folder = path_of("inbox") if staged else path_of("sources")
     target = folder / name
     if target.exists() or (path_of("sources") / name).exists():
@@ -316,11 +388,11 @@ def cmd_source_add(args) -> None:
             target.unlink(missing_ok=True)
             die(f"download failed: {e}. Save the file yourself and pass --file.")
     if staged:
-        (target.parent / f"{target.name}.source").write_text(f"{args.url}\n{cell(args.desc)}\n", encoding="utf-8")
+        (target.parent / f"{target.name}.source").write_text(f"{args.url}\n{cell(desc)}\n", encoding="utf-8")
         print(f"staged {rel(target)} for review. The owner promotes it into evidence with:\n"
-              f'  python .ai/wr.py source promote {rel(target)} --desc "{cell(args.desc)}"')
+              f'  python .ai/wr.py source promote {rel(target)} --desc "{cell(desc)}"')
     else:
-        log_source(target, args.url, args.desc)
+        log_source(target, args.url, desc)
         print(f"saved {rel(target)} and logged it in {layout(meta())['sources_log']}")
 
 
@@ -338,7 +410,9 @@ def cmd_source_promote(args) -> None:
         url, desc = lines[0], args.desc or lines[1]
     if not desc:
         die("pass --desc: what it is, version, date")
-    target = path_of("sources") / src.name
+    target = path_of("sources") / intake_name(src.name)
+    if target.name != src.name and "received as '" not in desc:
+        desc += f" (received as '{src.name}')"
     if target.exists():
         die(f"{rel(target)} already exists; sources are write-once. Rename the inbox file first.")
     shutil.move(str(src), str(target))
@@ -515,6 +589,9 @@ def main(argv: list[str] | None = None) -> None:
     ts.add_argument("title", nargs="?", help="a few words for the branch name")
     ts.add_argument("--type", default="feat", choices=["feat", "fix", "docs", "chore", "refactor", "test"])
     ts.set_defaults(func=cmd_ticket_start)
+    nm = sub.add_parser("names", help="names that break R-NAMES (ASCII, no spaces, safe on every system)")
+    nm.add_argument("--fix", action="store_true", help="rename them with git mv")
+    nm.set_defaults(func=cmd_names)
 
     n = sub.add_parser("note", help="new dated note")
     n.add_argument("topic")

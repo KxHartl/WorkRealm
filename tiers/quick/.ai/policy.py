@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +47,7 @@ ENFORCES = {
     "R-INBOX": {"claude": ["protect_paths.py", "bash_guard.py"]},
     "R-ADR": {"git": ["adr_format"]},
     "R-TICKET": {"git": ["ticket_ref"]},
+    "R-NAMES": {"git": ["names"]},
 }
 
 # Defaults for a workspace whose .workrealm.json predates "layout"; wr.py writes the real one.
@@ -83,6 +85,21 @@ REFS_TRAILER = re.compile(r"^Refs:\s*(.+)$", re.M)
 NO_COMMIT = "0" * 40
 NON_ENGLISH = re.compile("[\u010d\u0107\u017e\u0161\u0111\u010c\u0106\u017d\u0160\u0110]")  # Croatian letters
 TEXT_EXT = {".md", ".txt", ".py", ".ps1", ".sh", ".json", ".yaml", ".yml", ".toml", ".js", ".ts"}
+CODE_SPAN = re.compile(r"`[^`\n]*`")  # literal text, a name or a quote, not prose
+# Names that break a checkout somewhere: reserved on Windows, characters Windows refuses, and a
+# length that leaves room for the folder the workspace sits in under Windows' 260-character limit.
+RESERVED_NAME = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", re.I)
+UNSAFE_CHARS = re.compile(r'[<>:"\\|?*\x00-\x1f]')
+MAX_PATH = 200
+# Letters NFKD does not reduce to ASCII on its own (d with stroke, sharp s, ligatures, ...).
+TRANSLIT = str.maketrans({"\u0111": "d", "\u0110": "D", "\u00df": "ss", "\u00e6": "ae", "\u00c6": "AE",
+                          "\u00f8": "o", "\u00d8": "O", "\u0142": "l", "\u0141": "L", "\u0153": "oe",
+                          "\u0152": "OE", "\u00fe": "th", "\u00de": "Th", "\u00f0": "d", "\u00d0": "D"})
+# Languages whose file names are snake_case; everything else takes kebab-case.
+SNAKE_EXT = {".py", ".pyi", ".go", ".rs", ".c", ".h", ".cc", ".cpp", ".hpp", ".r", ".rb", ".sql"}
+BRANCH_TYPES = "feat|fix|docs|chore|refactor|test|perf|build|ci|style|revert|release|hotfix"
+BRANCH = re.compile(rf"^(main|master|develop|trunk|gh-pages)$|^({BRANCH_TYPES})/"
+                    r"(?:[A-Z][A-Z0-9]+-\d+(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?|[a-z0-9]+(?:[.-][a-z0-9]+)*)$")
 
 
 class Finding:
@@ -218,6 +235,34 @@ def refs_ticket(message: str, key: str) -> bool:
     return any(key in TICKET_KEY.findall(line) for line in REFS_TRAILER.findall(message))
 
 
+def to_ascii(text: str) -> str:
+    """The closest ASCII: letters lose their diacritics (c with caron -> c, d with stroke -> d);
+    what has no ASCII form is dropped."""
+    text = unicodedata.normalize("NFKD", text.translate(TRANSLIT))
+    return "".join(c for c in text if not unicodedata.combining(c)).encode("ascii", "ignore").decode()
+
+
+def safe_name(name: str) -> str | None:
+    """The name with as little change as passes R-NAMES: ASCII, no spaces or unsafe characters,
+    no trailing dot. Case is kept (a Java class file needs it); the separator is the language's.
+    None when nothing usable is left (a name written in a script with no ASCII form)."""
+    sep = "_" if Path(name).suffix.lower() in SNAKE_EXT else "-"
+    out = re.sub(r'[\s<>:"\\|?*\x00-\x1f]+', sep, to_ascii(name))
+    out = re.sub(rf"{sep}*\.{sep}*", ".", re.sub(sep + "+", sep, out)).strip(sep).rstrip(". ")
+    return None if not out.strip(".") or (out.startswith(".") and not name.startswith(".")) else out
+
+
+def name_problem(segment: str) -> str | None:
+    """Why a file or folder name breaks a checkout on some system, or None."""
+    if RESERVED_NAME.match(segment):
+        return "a reserved name on Windows"
+    if UNSAFE_CHARS.search(segment):
+        return 'a character Windows refuses (< > : " \\ | ? * or a control character)'
+    if segment != segment.rstrip(". "):
+        return "a trailing dot or space, which Windows drops"
+    return None
+
+
 def decision_homes(meta: dict) -> list[str]:
     lay = layout(meta)
     return [lay["decisions"], lay["archive"]] + meta.get("snapshots", [])
@@ -275,6 +320,37 @@ def check_naming(root, meta, changes):
                     and not re.fullmatch(rule["pattern"], first):
                 yield block("R-PLACE", f"{path}: '{first}' does not follow the naming rule for "
                                        f"{rule['under']}/ (e.g. {rule['example']}). Rename it with `git mv`.")
+
+
+def check_names(root, meta, changes):
+    added = [path for status, path in changes if status == "A"]
+    if not added:
+        return
+    folded: dict[str, list[str]] = {}
+    for t in git(root, "ls-files", "-z").stdout.split("\0"):
+        if t:
+            folded.setdefault(t.casefold(), []).append(t)
+    style = []
+    for path in added:
+        segments = path.split("/")
+        problem = next(((s, p) for s in segments if (p := name_problem(s))), None)
+        if problem:
+            yield block("R-NAMES", f"{path}: '{problem[0]}' is {problem[1]}. Rename it with `git mv`.")
+        if len(path) > MAX_PATH:
+            yield block("R-NAMES", f"{path} is {len(path)} characters; over {MAX_PATH} it fails to check out "
+                                   "on Windows. Shorten a folder or file name.")
+        twins = [t for t in folded.get(path.casefold(), []) if t != path]
+        if twins:
+            yield block("R-NAMES", f"{path} and {twins[0]} differ only in case: on Windows and macOS they are "
+                                   "one file. Keep one name.")
+        if not path.isascii() or re.search(r"\s", path):
+            better = "/".join(safe_name(s) or s for s in segments)
+            style.append(f"{path} -> {better}" if better != path else path)
+    if style:
+        yield warn("R-NAMES", "names are ASCII without spaces (\u010d, \u0107 -> c, \u0161 -> s, "
+                              "\u017e -> z, \u0111 -> d): " + "; ".join(style) + ". `python .ai/wr.py names --fix` "
+                              "renames them with git mv. A received file is write-once once committed: fix its "
+                              "name first.")
 
 
 def check_decision_register(root, meta, changes):
@@ -359,7 +435,7 @@ def check_english(root, meta, changes):
         if status == "D" or any(under(path, s) for s in skip) or Path(path).suffix not in TEXT_EXT:
             continue
         diff = git(root, "diff", "--cached", "-U0", "--", path).stdout
-        if any(ln.startswith("+") and not ln.startswith("+++") and NON_ENGLISH.search(ln)
+        if any(ln.startswith("+") and not ln.startswith("+++") and NON_ENGLISH.search(CODE_SPAN.sub("", ln))
                for ln in diff.splitlines()):
             hits.append(path)
     if hits:
@@ -372,6 +448,7 @@ STAGED_CHECKS = {
     "protected_paths": check_protected_paths,
     "sources_logged": check_sources_logged,
     "naming": check_naming,
+    "names": check_names,
     "decision_register": check_decision_register,
     "zone_placement": check_zone_placement,
     "adr_format": check_adr_format,
@@ -432,6 +509,12 @@ def message_findings(message: str, root: Path = ROOT, changes: list[tuple[str, s
             and any(under(p, decisions) for _, p in changes):
         found.append(block("R-DECISIONS", f"this commit changes {decisions}/; the body must say why "
                                           "(it is the record of why a decision moved)."))
+    if "names" in enabled:
+        name = current_branch(root) if branch is None else branch
+        if name and not BRANCH.match(name):
+            found.append(warn("R-NAMES", f"branch {name!r} is not `<type>/<short-desc>` ({BRANCH_TYPES.replace('|', ', ')}), "
+                                         "e.g. feat/ABC-123-cache-warmup or docs/setup-guide: "
+                                         f"git branch -m {name} <type>/<short-desc>"))
     ticket = active_ticket(root, meta, branch) if "ticket_ref" in enabled else None
     if ticket and not refs_ticket(message, ticket):
         found.append(warn("R-TICKET", f"this work belongs to {ticket}; end the message with "

@@ -303,6 +303,8 @@ class TestGitPolicy(Base):
         r = commit(ws, "docs: note")
         self.assertCommitted(r)
         self.assertIn("R-LANG", r.stderr)
+        write(ws / "names.md", "The file was `izvješće.pdf`; letters like `č` are quoted.\n")
+        self.assertNotIn("R-LANG", commit(ws, "docs: names").stderr)   # code spans are literal
 
     def test_final_outputs_are_croatian_everything_else_english(self):
         ws = self.new("g9")
@@ -1067,6 +1069,106 @@ class TestTicket(Base):
         self.assertNotEqual(helper(ws, "ticket", "start", "not-a-key").returncode, 0)
         write(ws / "b.txt", "x")
         self.assertNotIn("R-TICKET", commit(ws, "feat: no ticket here").stderr)
+
+
+def stage_blob(ws: Path, path: str) -> None:
+    """Stage a path the local file system could not hold (CON, a trailing dot, a case twin)."""
+    sha = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=ws, input="x", capture_output=True,
+                         text=True).stdout.strip()
+    subprocess.run(["git", "-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", f"100644,{sha},{path}"], cwd=ws, check=True)
+
+
+def plain_commit(ws: Path, message: str) -> subprocess.CompletedProcess:
+    """`git commit` of what is staged, without adding the work tree."""
+    return subprocess.run(["git", "commit", "-q", "-m", message], cwd=ws, capture_output=True, text=True)
+
+
+class TestNames(Base):
+    def test_names_that_break_a_checkout_are_refused(self):
+        ws = self.new("n1", "--quick")
+        write(ws / "notes-a.md", "x")
+        self.assertEqual(commit(ws, "docs: a").returncode, 0)
+        for bad in ("CON.txt", "docs/aux.md", "report.", "what?.md", "Notes-A.md", "d/" + "x" * 200 + ".md"):
+            stage_blob(ws, bad)
+            r = plain_commit(ws, "docs: bad name")
+            self.assertNotEqual(r.returncode, 0, bad)
+            self.assertIn("R-NAMES", r.stderr, bad)
+            subprocess.run(["git", "-c", "core.protectNTFS=false", "rm", "-q", "--cached", bad], cwd=ws, check=True)
+        write(ws / "console-log.md", "x")                      # only the exact reserved names
+        self.assertEqual(commit(ws, "docs: log").returncode, 0)
+
+    def test_non_ascii_and_spaces_warn_with_the_ascii_name(self):
+        ws = self.new("n2", "--quick")
+        write(ws / "Izvješće o đaku.md", "x")
+        write(ws / "src" / "data loader.py", "x")
+        r = commit(ws, "docs: draft")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("R-NAMES", r.stderr)
+        self.assertIn("Izvjesce-o-daku.md", r.stderr)
+        self.assertIn("src/data_loader.py", r.stderr)          # Python takes snake_case
+
+    def test_branch_outside_the_convention_warns(self):
+        ws = self.new("n3", "--quick")
+        subprocess.run(["git", "switch", "-q", "-c", "ai/thing"], cwd=ws)
+        write(ws / "a.txt", "x")
+        self.assertIn("R-NAMES", commit(ws, "feat: a").stderr)
+        subprocess.run(["git", "branch", "-m", "feat/thing"], cwd=ws)
+        write(ws / "b.txt", "x")
+        self.assertNotIn("R-NAMES", commit(ws, "feat: b").stderr)
+
+    def test_names_fix_renames_and_keeps_evidence(self):
+        ws = self.new("n4")
+        write(ws / "references" / "Norma č.pdf", "x")
+        log = ws / "references" / "SOURCES_LOG.md"
+        write(log, log.read_text(encoding="utf-8") + "2026-10-26 — https://x — references/Norma č.pdf — norm\n")
+        write(ws / "docs" / "notes" / "2026-10-26-sastanak.md", "See Bilješke sastanka.md.\n")
+        write(ws / "Bilješke sastanka.md", "x")
+        self.assertEqual(commit(ws, "docs: material").returncode, 0)
+        write(ws / "src" / "data loader.py", "x")              # not yet tracked
+        r = helper(ws, "names")
+        self.assertIn("rename   Bilje", r.stdout)
+        self.assertIn("keep     references/Norma", r.stdout)
+        self.assertTrue((ws / "Bilješke sastanka.md").exists())    # a listing changes nothing
+        r = helper(ws, "names", "--fix")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((ws / "Biljeske-sastanka.md").exists())
+        self.assertTrue((ws / "src" / "data_loader.py").exists())
+        self.assertTrue((ws / "references" / "Norma č.pdf").exists())
+        self.assertIn("still named in: docs/notes/2026-10-26-sastanak.md", r.stdout)
+        self.assertIn("R  ", git(ws, "status", "--porcelain"))           # tracked files moved with git mv
+        self.assertEqual(commit(ws, "chore: ascii names").returncode, 0)
+        self.assertIn("keep", helper(ws, "names").stdout)
+
+    def test_received_files_get_standard_names_and_keep_the_original_in_the_log(self):
+        ws = self.new("n5")
+        local = self.tmp / "Izvješće o stanju 2024.PDF"
+        local.write_bytes(b"pdf")
+        r = helper(ws, "source", "add", "https://x/r.pdf", "--desc", "Status report", "--file", str(local))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((ws / "references" / "izvjesce-o-stanju-2024.pdf").exists())
+        log = (ws / "references" / "SOURCES_LOG.md").read_text(encoding="utf-8")
+        self.assertIn("Status report (received as 'Izvješće o stanju 2024.PDF')", log)
+        r = commit(ws, "docs: add report")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("R-NAMES", r.stderr)
+        self.assertEqual(helper(ws, "note", "Čvorište Đakovo").returncode, 0)
+        self.assertEqual(len(list((ws / "docs" / "notes").glob("*-cvoriste-dakovo.md"))), 1)
+
+        ws = self.new("n6", "--project")
+        write(ws / "references" / "inbox" / "Datasheet V2.PDF", "pdf")  # dropped in by hand
+        r = helper(ws, "source", "promote", "references/inbox/Datasheet V2.PDF", "--desc", "Datasheet")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((ws / "references" / "datasheet-v2.pdf").exists())
+        self.assertIn("Datasheet (received as 'Datasheet V2.PDF')",
+                      (ws / "references" / "SOURCES_LOG.md").read_text(encoding="utf-8"))
+
+    def test_every_workspace_gets_an_editorconfig_and_a_users_own_is_kept(self):
+        ws = self.new("n7", "--quick")
+        self.assertIn("indent_size = 4", (ws / ".editorconfig").read_text(encoding="utf-8"))
+        write(ws / ".editorconfig", "root = true\n")
+        self.assertEqual(commit(ws, "chore: own editorconfig").returncode, 0)
+        self.assertEqual(run_wr("upgrade", "--to", "task", "--path", str(ws)).returncode, 0)
+        self.assertEqual((ws / ".editorconfig").read_text(encoding="utf-8"), "root = true\n")
 
 
 class TestTemplate(Base):
