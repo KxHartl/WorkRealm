@@ -185,3 +185,7 @@ WorkRealm is the third generation of the same idea:
 | [AgentRealm](https://github.com/KxHartl/AgentRealm) | First generation (Apr–Jun 2026): project template with a clean root and an `.ai/` engine room |
 | [LiteRealm](https://github.com/KxHartl/LiteRealm) | Second generation (May–Sep 2026): template for academic LaTeX work, seminars and theses |
 | [AgentBrain](https://github.com/KxHartl/AgentBrain) | The shared brain: agents, skills, templates and RAG scripts, synced into every workspace |
+
+## License
+
+[Apache-2.0](LICENSE). It covers the author's own work in this repository. Third-party parts keep their own licences.
